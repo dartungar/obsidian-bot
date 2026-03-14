@@ -14,5 +14,17 @@ services:
     volumes:
       - ${OBSIDIAN_HOST_PATH:-/home/dartungar/notes-test}:/var/notes
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q ObsidianBot.dll /proc/1/cmdline"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     network_mode: bridge
+    labels:
+      - homepage.group=Bots
+      - homepage.name=Obsidian Bot
+      - homepage.icon=sh-pandoc-light.png
+      - homepage.href=https://coolify.dartungar.com/project/ycsgggs0kssowcwgskww4cg8/environment/kk4sgs8wsgk44gc80c8soggk/application/r7bsa9osr3p7pwucxhe9oi7w
+
 

@@ -12,7 +12,7 @@ services:
       - OBSIDIAN_INBOX_NOTE_PATH=${OBSIDIAN_INBOX_NOTE_PATH:-_inbox/_inbox.md}
       - OBSIDIAN_MEDIA_FOLDER_PATH=${OBSIDIAN_MEDIA_FOLDER_PATH:-_inbox}
     volumes:
-      - ${OBSIDIAN_HOST_PATH:-/home/dartungar/notes-test}:/var/notes
+      - /var/obsidian:/var/notes
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "grep -q ObsidianBot.dll /proc/1/cmdline"]

@@ -1,0 +1,18 @@
+services:
+  obsidian-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - TELEGRAM_BOT_TOKEN=${OBSIDIAN_BOT_TOKEN}
+      - TELEGRAM_ALLOWED_USER_ID=${TELEGRAM_ALLOWED_USER_ID}
+      - BUTLER_TIMEZONE=${BUTLER_TIMEZONE:-UTC}
+      - OBSIDIAN_VAULT_PATH=/var/notes
+      - OBSIDIAN_DAILY_NOTES_PATTERN=${OBSIDIAN_DAILY_NOTES_PATTERN:-04 archive/journal/daily journal/*.md}
+      - OBSIDIAN_INBOX_NOTE_PATH=${OBSIDIAN_INBOX_NOTE_PATH:-_inbox/_inbox.md}
+      - OBSIDIAN_MEDIA_FOLDER_PATH=${OBSIDIAN_MEDIA_FOLDER_PATH:-_inbox}
+    volumes:
+      - ${OBSIDIAN_HOST_PATH:-/home/dartungar/notes-test}:/var/notes
+    restart: unless-stopped
+    network_mode: bridge
+

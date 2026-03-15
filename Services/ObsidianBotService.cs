@@ -241,6 +241,7 @@ public sealed class ObsidianBotService : BackgroundService
             var result = action switch
             {
                 "today" => await _vaultWriter.SaveToDailyNoteAsync(_vaultWriter.GetLocalDateToday(), pending, ct),
+                "yesterday" => await _vaultWriter.SaveToDailyNoteAsync(_vaultWriter.GetLocalDateToday().AddDays(-1), pending, ct),
                 "inbox" => await _vaultWriter.SaveToInboxAsync(pending, ct),
                 _ => throw new InvalidOperationException("Unknown action.")
             };

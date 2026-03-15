@@ -21,6 +21,7 @@ public static class TelegramKeyboards
         return new InlineKeyboardMarkup(new[]
         {
             new[] { InlineKeyboardButton.WithCallbackData("Today's daily note", "obs:today") },
+            new[] { InlineKeyboardButton.WithCallbackData("Add to yesterday's note", "obs:yesterday") },
             new[] { InlineKeyboardButton.WithCallbackData("Other date", "obs:date") },
             new[] { InlineKeyboardButton.WithCallbackData("Inbox note", "obs:inbox") },
             new[] { InlineKeyboardButton.WithCallbackData("Cancel", "obs:cancel") }

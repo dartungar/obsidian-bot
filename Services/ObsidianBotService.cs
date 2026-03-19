@@ -36,6 +36,7 @@ public sealed class ObsidianBotService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var me = await _bot.GetMeAsync(stoppingToken);
+        await ConfigureCommandsAsync(stoppingToken);
         _logger.LogInformation("Obsidian bot started as @{Username}", me.Username);
 
         while (!stoppingToken.IsCancellationRequested)
@@ -62,6 +63,26 @@ public sealed class ObsidianBotService : BackgroundService
                 _logger.LogWarning(ex, "Polling failed; retrying");
                 await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken);
             }
+        }
+    }
+
+    private async Task ConfigureCommandsAsync(CancellationToken ct)
+    {
+        try
+        {
+            await _bot.SetMyCommandsAsync(
+                TelegramKeyboards.GetBotCommands(),
+                BotCommandScope.Chat(_options.AllowedUserId),
+                cancellationToken: ct);
+
+            await _bot.SetChatMenuButtonAsync(
+                _options.AllowedUserId,
+                new MenuButtonCommands(),
+                ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to configure Telegram commands or menu button");
         }
     }
 
@@ -156,6 +177,17 @@ public sealed class ObsidianBotService : BackgroundService
             await _bot.SendTextMessageAsync(
                 chatId,
                 "Send text, voice, or photo and I will save it to Obsidian.\nUse /add <text> for quick add.",
+                replyMarkup: TelegramKeyboards.BuildMainReplyKeyboard(),
+                cancellationToken: ct);
+            return;
+        }
+
+        if (text.StartsWith("/cancel", StringComparison.OrdinalIgnoreCase))
+        {
+            ClearPendingState(chatId);
+            await _bot.SendTextMessageAsync(
+                chatId,
+                "Cancelled.",
                 replyMarkup: TelegramKeyboards.BuildMainReplyKeyboard(),
                 cancellationToken: ct);
             return;

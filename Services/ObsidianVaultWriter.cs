@@ -38,6 +38,20 @@ public sealed class ObsidianVaultWriter
         return SaveToNoteAsync(notePath, $"daily note for {date:yyyy-MM-dd}", pending, prependDivider: false, bulletText: true, ct);
     }
 
+    public Task<SaveResult> SaveTaskToInboxAsync(string taskText, CancellationToken ct)
+    {
+        var notePath = ResolveVaultPath(_options.InboxNotePath);
+        return SaveTaskToNoteAsync(notePath, "inbox note", taskText, ct);
+    }
+
+    public Task<SaveResult> SaveTaskToDailyNoteAsync(DateOnly date, string taskText, CancellationToken ct)
+    {
+        var dailyDirectory = Path.GetDirectoryName(_options.DailyNotesPattern) ?? string.Empty;
+        var relativePath = Path.Combine(dailyDirectory, $"{date:yyyy-MM-dd}.md");
+        var notePath = ResolveVaultPath(relativePath);
+        return SaveTaskToDailyNoteFileAsync(notePath, $"daily note for {date:yyyy-MM-dd}", taskText, ct);
+    }
+
     private async Task<SaveResult> SaveToNoteAsync(
         string notePath,
         string target,
@@ -90,6 +104,59 @@ public sealed class ObsidianVaultWriter
         }
 
         return new SaveResult(target, ToVaultRelativePath(notePath), mediaRelativePath);
+    }
+
+    private async Task<SaveResult> SaveTaskToNoteAsync(
+        string notePath,
+        string target,
+        string taskText,
+        CancellationToken ct)
+    {
+        EnsureMarkdownPath(notePath);
+        Directory.CreateDirectory(Path.GetDirectoryName(notePath) ?? _options.VaultPath);
+
+        var entry = FormatTaskLine(taskText);
+        var fileLock = FileLocks.GetOrAdd(notePath, static _ => new SemaphoreSlim(1, 1));
+        await fileLock.WaitAsync(ct);
+        try
+        {
+            await AppendToFileAsync(notePath, entry, ct);
+        }
+        finally
+        {
+            fileLock.Release();
+        }
+
+        return new SaveResult(target, ToVaultRelativePath(notePath), null);
+    }
+
+    private async Task<SaveResult> SaveTaskToDailyNoteFileAsync(
+        string notePath,
+        string target,
+        string taskText,
+        CancellationToken ct)
+    {
+        EnsureMarkdownPath(notePath);
+        Directory.CreateDirectory(Path.GetDirectoryName(notePath) ?? _options.VaultPath);
+
+        var taskLine = FormatTaskLine(taskText);
+        var fileLock = FileLocks.GetOrAdd(notePath, static _ => new SemaphoreSlim(1, 1));
+        await fileLock.WaitAsync(ct);
+        try
+        {
+            var existingContent = File.Exists(notePath)
+                ? await File.ReadAllTextAsync(notePath, ct)
+                : string.Empty;
+
+            var updatedContent = InsertTaskIntoDailyNote(existingContent, taskLine);
+            await File.WriteAllTextAsync(notePath, updatedContent, new UTF8Encoding(false), ct);
+        }
+        finally
+        {
+            fileLock.Release();
+        }
+
+        return new SaveResult(target, ToVaultRelativePath(notePath), null);
     }
 
     private async Task<string> SaveMediaAsync(byte[] mediaBytes, string extension, CancellationToken ct)
@@ -197,5 +264,114 @@ public sealed class ObsidianVaultWriter
         {
             throw new InvalidOperationException("Target note must be a .md file.");
         }
+    }
+
+    private static string FormatTaskLine(string taskText)
+    {
+        var text = taskText.Trim();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            throw new InvalidOperationException("Task text is empty.");
+        }
+
+        return $"- [ ] {text}";
+    }
+
+    private static string InsertTaskIntoDailyNote(string content, string taskLine)
+    {
+        var newline = content.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        var normalized = content.Replace("\r\n", "\n");
+        var lines = normalized.Length == 0
+            ? new List<string>()
+            : normalized.TrimEnd('\n').Split('\n').ToList();
+
+        var tasksHeadingIndex = FindHeadingIndex(lines, "Tasks");
+        if (tasksHeadingIndex >= 0)
+        {
+            InsertTaskUnderExistingHeading(lines, tasksHeadingIndex, taskLine);
+            return string.Join(newline, lines) + newline;
+        }
+
+        InsertNewTasksSection(lines, taskLine);
+        return string.Join(newline, lines) + newline;
+    }
+
+    private static int FindHeadingIndex(IReadOnlyList<string> lines, string headingName)
+    {
+        for (var index = 0; index < lines.Count; index++)
+        {
+            if (TryGetHeadingName(lines[index], out var currentHeading) &&
+                string.Equals(currentHeading, headingName, StringComparison.OrdinalIgnoreCase))
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    private static void InsertTaskUnderExistingHeading(List<string> lines, int tasksHeadingIndex, string taskLine)
+    {
+        var nextHeadingIndex = lines.Count;
+        for (var index = tasksHeadingIndex + 1; index < lines.Count; index++)
+        {
+            if (TryGetHeadingName(lines[index], out _))
+            {
+                nextHeadingIndex = index;
+                break;
+            }
+        }
+
+        var insertIndex = tasksHeadingIndex + 1;
+        for (var index = tasksHeadingIndex + 1; index < nextHeadingIndex; index++)
+        {
+            if (IsTaskLine(lines[index]))
+            {
+                insertIndex = index + 1;
+            }
+        }
+
+        lines.Insert(insertIndex, taskLine);
+    }
+
+    private static void InsertNewTasksSection(List<string> lines, string taskLine)
+    {
+        var journalHeadingIndex = FindHeadingIndex(lines, "Journal");
+        var insertIndex = journalHeadingIndex >= 0 ? journalHeadingIndex : lines.Count;
+
+        var sectionLines = new List<string> { "## Tasks", taskLine };
+        if (insertIndex > 0 && !string.IsNullOrWhiteSpace(lines[insertIndex - 1]))
+        {
+            sectionLines.Insert(0, string.Empty);
+        }
+
+        if (insertIndex < lines.Count && !string.IsNullOrWhiteSpace(lines[insertIndex]))
+        {
+            sectionLines.Add(string.Empty);
+        }
+
+        lines.InsertRange(insertIndex, sectionLines);
+    }
+
+    private static bool TryGetHeadingName(string line, out string headingName)
+    {
+        var trimmed = line.Trim();
+        if (!trimmed.StartsWith('#'))
+        {
+            headingName = string.Empty;
+            return false;
+        }
+
+        headingName = trimmed.TrimStart('#').Trim();
+        return headingName.Length > 0;
+    }
+
+    private static bool IsTaskLine(string line)
+    {
+        var trimmed = line.TrimStart();
+        return trimmed.StartsWith("- [ ] ", StringComparison.Ordinal)
+            || trimmed.StartsWith("- [x] ", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("* [ ] ", StringComparison.Ordinal)
+            || trimmed.StartsWith("* [x] ", StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -176,7 +176,7 @@ public sealed class ObsidianBotService : BackgroundService
         {
             await _bot.SendTextMessageAsync(
                 chatId,
-                "Send text, voice, or photo and I will save it to Obsidian.\nUse /add <text> for quick add.",
+                "Send text, voice, or photo and I will save it to Obsidian.\nUse /add <text> for quick notes.\nUse /addtask <text> to add a checkbox task.",
                 replyMarkup: TelegramKeyboards.BuildMainReplyKeyboard(),
                 cancellationToken: ct);
             return;
@@ -190,6 +190,23 @@ public sealed class ObsidianBotService : BackgroundService
                 "Cancelled.",
                 replyMarkup: TelegramKeyboards.BuildMainReplyKeyboard(),
                 cancellationToken: ct);
+            return;
+        }
+
+        if (text.StartsWith("/addtask", StringComparison.OrdinalIgnoreCase))
+        {
+            var content = text[8..].Trim();
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                await _bot.SendTextMessageAsync(
+                    chatId,
+                    "Usage: /addtask your task text",
+                    replyMarkup: TelegramKeyboards.BuildMainReplyKeyboard(),
+                    cancellationToken: ct);
+                return;
+            }
+
+            await PromptDestinationAsync(chatId, new PendingCapture { TextContent = content, IsTask = true }, ct);
             return;
         }
 
@@ -270,13 +287,9 @@ public sealed class ObsidianBotService : BackgroundService
 
         try
         {
-            var result = action switch
-            {
-                "today" => await _vaultWriter.SaveToDailyNoteAsync(_vaultWriter.GetLocalDateToday(), pending, ct),
-                "yesterday" => await _vaultWriter.SaveToDailyNoteAsync(_vaultWriter.GetLocalDateToday().AddDays(-1), pending, ct),
-                "inbox" => await _vaultWriter.SaveToInboxAsync(pending, ct),
-                _ => throw new InvalidOperationException("Unknown action.")
-            };
+            var result = pending.IsTask
+                ? await SaveTaskFromActionAsync(action, pending, ct)
+                : await SaveCaptureFromActionAsync(action, pending, ct);
 
             ClearPendingState(chatId.Value);
             await EditOrSendAsync(callbackQuery.Message, BuildSavedMessage(result), ct);
@@ -286,6 +299,34 @@ public sealed class ObsidianBotService : BackgroundService
             _logger.LogWarning(ex, "Failed to save pending content");
             await EditOrSendAsync(callbackQuery.Message, $"Save failed: {ex.Message}", ct);
         }
+    }
+
+    private Task<SaveResult> SaveCaptureFromActionAsync(string action, PendingCapture pending, CancellationToken ct)
+    {
+        return action switch
+        {
+            "today" => _vaultWriter.SaveToDailyNoteAsync(_vaultWriter.GetLocalDateToday(), pending, ct),
+            "yesterday" => _vaultWriter.SaveToDailyNoteAsync(_vaultWriter.GetLocalDateToday().AddDays(-1), pending, ct),
+            "inbox" => _vaultWriter.SaveToInboxAsync(pending, ct),
+            _ => throw new InvalidOperationException("Unknown action.")
+        };
+    }
+
+    private Task<SaveResult> SaveTaskFromActionAsync(string action, PendingCapture pending, CancellationToken ct)
+    {
+        var taskText = pending.TextContent?.Trim();
+        if (string.IsNullOrWhiteSpace(taskText))
+        {
+            throw new InvalidOperationException("Task text is empty.");
+        }
+
+        return action switch
+        {
+            "task:today" => _vaultWriter.SaveTaskToDailyNoteAsync(_vaultWriter.GetLocalDateToday(), taskText, ct),
+            "task:tomorrow" => _vaultWriter.SaveTaskToDailyNoteAsync(_vaultWriter.GetLocalDateToday().AddDays(1), taskText, ct),
+            "task:inbox" => _vaultWriter.SaveTaskToInboxAsync(taskText, ct),
+            _ => throw new InvalidOperationException("Unknown action.")
+        };
     }
 
     private async Task HandleDateInputAsync(long chatId, string text, CancellationToken ct)
@@ -350,8 +391,10 @@ public sealed class ObsidianBotService : BackgroundService
 
         await _bot.SendTextMessageAsync(
             chatId,
-            "Where should I save it?",
-            replyMarkup: TelegramKeyboards.BuildDestinationKeyboard(),
+            pending.IsTask ? "Where should I add this task?" : "Where should I save it?",
+            replyMarkup: pending.IsTask
+                ? TelegramKeyboards.BuildTaskDestinationKeyboard()
+                : TelegramKeyboards.BuildDestinationKeyboard(),
             cancellationToken: ct);
     }
 

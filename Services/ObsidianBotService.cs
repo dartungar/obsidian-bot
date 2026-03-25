@@ -259,7 +259,8 @@ public sealed class ObsidianBotService : BackgroundService
 
         try
         {
-            var result = pending.IsTask
+            var isTaskAction = action.StartsWith("task:", StringComparison.Ordinal);
+            var result = pending.IsTask || isTaskAction
                 ? await SaveTaskFromActionAsync(action, pending, ct)
                 : await SaveCaptureFromActionAsync(action, pending, ct);
 

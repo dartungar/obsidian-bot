@@ -40,18 +40,28 @@ public static class TelegramKeyboards
     {
         var buttons = new List<InlineKeyboardButton[]>
         {
-            new[] { InlineKeyboardButton.WithCallbackData("Today's daily note", "obs:today") }
+            new[] { InlineKeyboardButton.WithCallbackData("Today", "obs:today") }
         };
 
         if (includeTaskActions)
         {
-            buttons.Add(new[] { InlineKeyboardButton.WithCallbackData("Add task to today", "obs:task:today") });
-            buttons.Add(new[] { InlineKeyboardButton.WithCallbackData("Add task to tomorrow", "obs:task:tomorrow") });
+            buttons.Add(new[] { InlineKeyboardButton.WithCallbackData("Today (as task)", "obs:task:today") });
         }
 
-        buttons.Add(new[] { InlineKeyboardButton.WithCallbackData("Add to yesterday's note", "obs:yesterday") });
-        buttons.Add(new[] { InlineKeyboardButton.WithCallbackData("Other date", "obs:date") });
-        buttons.Add(new[] { InlineKeyboardButton.WithCallbackData("Inbox note", "obs:inbox") });
+        buttons.Add(new[] { InlineKeyboardButton.WithCallbackData("Yesterday", "obs:yesterday") });
+
+        if (includeTaskActions)
+        {
+            buttons.Add(new[] { InlineKeyboardButton.WithCallbackData("Tomorrow (as task)", "obs:task:tomorrow") });
+        }
+
+        buttons.Add(new[] { InlineKeyboardButton.WithCallbackData("Inbox", "obs:inbox") });
+
+        if (includeTaskActions)
+        {
+            buttons.Add(new[] { InlineKeyboardButton.WithCallbackData("Inbox (as task)", "obs:task:inbox") });
+        }
+
         buttons.Add(new[] { InlineKeyboardButton.WithCallbackData("Cancel", "obs:cancel") });
 
         return new InlineKeyboardMarkup(buttons);

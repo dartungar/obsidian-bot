@@ -171,17 +171,6 @@ public sealed class ObsidianBotService : BackgroundService
 
     private async Task HandleTextMessageAsync(long chatId, string text, CancellationToken ct)
     {
-        if (text.StartsWith("/start", StringComparison.OrdinalIgnoreCase) ||
-            text.StartsWith("/help", StringComparison.OrdinalIgnoreCase))
-        {
-            await _bot.SendTextMessageAsync(
-                chatId,
-                "Send text, voice, or photo and I will save it to Obsidian.\nUse /add <text> for quick notes.\nUse /addtask <text> to add a checkbox task.",
-                replyMarkup: TelegramKeyboards.BuildMainReplyKeyboard(),
-                cancellationToken: ct);
-            return;
-        }
-
         if (text.StartsWith("/cancel", StringComparison.OrdinalIgnoreCase))
         {
             ClearPendingState(chatId);
@@ -190,23 +179,6 @@ public sealed class ObsidianBotService : BackgroundService
                 "Cancelled.",
                 replyMarkup: TelegramKeyboards.BuildMainReplyKeyboard(),
                 cancellationToken: ct);
-            return;
-        }
-
-        if (text.StartsWith("/addtask", StringComparison.OrdinalIgnoreCase))
-        {
-            var content = text[8..].Trim();
-            if (string.IsNullOrWhiteSpace(content))
-            {
-                await _bot.SendTextMessageAsync(
-                    chatId,
-                    "Usage: /addtask your task text",
-                    replyMarkup: TelegramKeyboards.BuildMainReplyKeyboard(),
-                    cancellationToken: ct);
-                return;
-            }
-
-            await PromptDestinationAsync(chatId, new PendingCapture { TextContent = content, IsTask = true }, ct);
             return;
         }
 
@@ -231,7 +203,7 @@ public sealed class ObsidianBotService : BackgroundService
         {
             await _bot.SendTextMessageAsync(
                 chatId,
-                "Unknown command. Use /help.",
+                "Unknown command.",
                 replyMarkup: TelegramKeyboards.BuildMainReplyKeyboard(),
                 cancellationToken: ct);
             return;
@@ -394,8 +366,15 @@ public sealed class ObsidianBotService : BackgroundService
             pending.IsTask ? "Where should I add this task?" : "Where should I save it?",
             replyMarkup: pending.IsTask
                 ? TelegramKeyboards.BuildTaskDestinationKeyboard()
-                : TelegramKeyboards.BuildDestinationKeyboard(),
+                : TelegramKeyboards.BuildDestinationKeyboard(ShouldUseTextDestinationKeyboard(pending)),
             cancellationToken: ct);
+    }
+
+    private static bool ShouldUseTextDestinationKeyboard(PendingCapture pending)
+    {
+        return !pending.IsTask
+            && pending.MediaBytes is null
+            && !string.IsNullOrWhiteSpace(pending.TextContent);
     }
 
     private async Task<byte[]> DownloadFileAsync(string fileId, CancellationToken ct)

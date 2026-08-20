@@ -10,6 +10,8 @@ public static class TelegramKeyboards
         return
         [
             new BotCommand { Command = "add", Description = "Quick add a text note" },
+            new BotCommand { Command = "search", Description = "Full-text search your vault" },
+            new BotCommand { Command = "semantic", Description = "Find notes by meaning" },
             new BotCommand { Command = "cancel", Description = "Cancel the current save flow" }
         ];
     }
@@ -18,7 +20,8 @@ public static class TelegramKeyboards
     {
         return new ReplyKeyboardMarkup(new[]
         {
-            new[] { new KeyboardButton("/add"), new KeyboardButton("/cancel") }
+            new[] { new KeyboardButton("/add"), new KeyboardButton("/search") },
+            new[] { new KeyboardButton("/semantic"), new KeyboardButton("/cancel") }
         })
         {
             ResizeKeyboard = true

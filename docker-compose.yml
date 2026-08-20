@@ -11,6 +11,13 @@ services:
       - OBSIDIAN_DAILY_NOTES_PATTERN=${OBSIDIAN_DAILY_NOTES_PATTERN:-04 archive/journal/daily journal/*.md}
       - OBSIDIAN_INBOX_NOTE_PATH=${OBSIDIAN_INBOX_NOTE_PATH:-_inbox/_inbox.md}
       - OBSIDIAN_MEDIA_FOLDER_PATH=${OBSIDIAN_MEDIA_FOLDER_PATH:-_inbox}
+      - OBSIDIAN_SEARCH_DATABASE_PATH=${OBSIDIAN_SEARCH_DATABASE_PATH:-.obsidian-bot/search.db}
+      - OBSIDIAN_SEARCH_RESULT_LIMIT=${OBSIDIAN_SEARCH_RESULT_LIMIT:-5}
+      - OBSIDIAN_SEARCH_RECONCILE_INTERVAL_SECONDS=${OBSIDIAN_SEARCH_RECONCILE_INTERVAL_SECONDS:-60}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_EMBEDDINGS_URL=${OPENAI_EMBEDDINGS_URL:-https://api.openai.com/v1/embeddings}
+      - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      - OPENAI_EMBEDDING_DIMENSIONS=${OPENAI_EMBEDDING_DIMENSIONS:-1536}
     volumes:
       - /var/obsidian:/var/notes
     restart: unless-stopped
@@ -26,5 +33,3 @@ services:
       - homepage.name=Obsidian Bot
       - homepage.icon=sh-pandoc-light.png
       - homepage.href=https://coolify.dartungar.com/project/ycsgggs0kssowcwgskww4cg8/environment/kk4sgs8wsgk44gc80c8soggk/application/r7bsa9osr3p7pwucxhe9oi7w
-
-

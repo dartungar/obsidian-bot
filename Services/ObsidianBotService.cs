@@ -16,6 +16,7 @@ public sealed class ObsidianBotService : BackgroundService
     private readonly ObsidianBotOptions _options;
     private readonly ITelegramBotClient _bot;
     private readonly ObsidianVaultWriter _vaultWriter;
+    private readonly VaultSearchService _vaultSearch;
     private readonly ConcurrentDictionary<long, PendingCapture> _pendingByChat = new();
     private readonly ConcurrentDictionary<long, DateTimeOffset> _awaitingDateByChat = new();
 
@@ -25,12 +26,14 @@ public sealed class ObsidianBotService : BackgroundService
         ILogger<ObsidianBotService> logger,
         ObsidianBotOptions options,
         ITelegramBotClient bot,
-        ObsidianVaultWriter vaultWriter)
+        ObsidianVaultWriter vaultWriter,
+        VaultSearchService vaultSearch)
     {
         _logger = logger;
         _options = options;
         _bot = bot;
         _vaultWriter = vaultWriter;
+        _vaultSearch = vaultSearch;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -199,6 +202,18 @@ public sealed class ObsidianBotService : BackgroundService
             return;
         }
 
+        if (TryGetCommandArgument(text, "/search", out var fullTextQuery))
+        {
+            await HandleSearchAsync(chatId, fullTextQuery, semantic: false, ct);
+            return;
+        }
+
+        if (TryGetCommandArgument(text, "/semantic", out var semanticQuery))
+        {
+            await HandleSearchAsync(chatId, semanticQuery, semantic: true, ct);
+            return;
+        }
+
         if (text.StartsWith('/'))
         {
             await _bot.SendTextMessageAsync(
@@ -210,6 +225,45 @@ public sealed class ObsidianBotService : BackgroundService
         }
 
         await PromptDestinationAsync(chatId, new PendingCapture { TextContent = text }, ct);
+    }
+
+    private async Task HandleSearchAsync(long chatId, string query, bool semantic, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            var command = semantic ? "/semantic" : "/search";
+            await _bot.SendTextMessageAsync(
+                chatId,
+                $"Usage: {command} your search terms",
+                replyMarkup: TelegramKeyboards.BuildMainReplyKeyboard(),
+                cancellationToken: ct);
+            return;
+        }
+
+        try
+        {
+            var results = semantic
+                ? await _vaultSearch.SearchSemanticAsync(query, ct)
+                : await _vaultSearch.SearchFullTextAsync(query, ct);
+            await _bot.SendTextMessageAsync(
+                chatId,
+                BuildSearchMessage(results, semantic),
+                replyMarkup: TelegramKeyboards.BuildMainReplyKeyboard(),
+                cancellationToken: ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "{SearchType} search failed", semantic ? "Semantic" : "Full-text");
+            await _bot.SendTextMessageAsync(
+                chatId,
+                $"Search failed: {ex.Message}",
+                replyMarkup: TelegramKeyboards.BuildMainReplyKeyboard(),
+                cancellationToken: ct);
+        }
     }
 
     private async Task HandleCallbackAsync(CallbackQuery callbackQuery, CancellationToken ct)
@@ -422,6 +476,38 @@ public sealed class ObsidianBotService : BackgroundService
     {
         return DateOnly.TryParseExact(text, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out date)
             || DateOnly.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.None, out date);
+    }
+
+    private static bool TryGetCommandArgument(string text, string command, out string argument)
+    {
+        if (!text.StartsWith(command, StringComparison.OrdinalIgnoreCase) ||
+            (text.Length > command.Length && !char.IsWhiteSpace(text[command.Length])))
+        {
+            argument = string.Empty;
+            return false;
+        }
+
+        argument = text[command.Length..].Trim();
+        return true;
+    }
+
+    private static string BuildSearchMessage(IReadOnlyList<SearchResult> results, bool semantic)
+    {
+        if (results.Count == 0)
+        {
+            return "No matching notes found.";
+        }
+
+        var title = semantic ? "Semantic search results:" : "Full-text search results:";
+        var entries = results.Select(result =>
+        {
+            var distance = semantic && result.Distance is { } value
+                ? $"\nDistance: {value:F3}"
+                : string.Empty;
+            return $"{result.NotePath}\n{result.Snippet}{distance}";
+        });
+        var message = title + "\n\n" + string.Join("\n\n", entries);
+        return message.Length <= 3_900 ? message : message[..3_897] + "...";
     }
 
     private static string BuildSavedMessage(SaveResult result)

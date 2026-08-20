@@ -38,14 +38,20 @@ public sealed class ObsidianBotService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var me = await _bot.GetMeAsync(stoppingToken);
-        await ConfigureCommandsAsync(stoppingToken);
-        _logger.LogInformation("Obsidian bot started as @{Username}", me.Username);
+        var initialized = false;
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
+                if (!initialized)
+                {
+                    var me = await _bot.GetMeAsync(stoppingToken);
+                    await ConfigureCommandsAsync(stoppingToken);
+                    _logger.LogInformation("Obsidian bot started as @{Username}", me.Username);
+                    initialized = true;
+                }
+
                 var updates = await _bot.GetUpdatesAsync(
                     offset: _offset,
                     timeout: 30,
@@ -64,7 +70,14 @@ public sealed class ObsidianBotService : BackgroundService
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Polling failed; retrying");
-                await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken);
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
             }
         }
     }

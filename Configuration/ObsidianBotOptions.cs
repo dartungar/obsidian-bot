@@ -16,6 +16,7 @@ public sealed record ObsidianBotOptions(
     int EmbeddingDimensions,
     int SearchResultLimit,
     int SearchReconcileIntervalSeconds,
+    string ApiToken,
     TimeZoneInfo TimeZone)
 {
     public static ObsidianBotOptions Load(IConfiguration configuration)
@@ -56,6 +57,7 @@ public sealed record ObsidianBotOptions(
             SearchReconcileIntervalSeconds: ParsePositiveInt(
                 configuration["OBSIDIAN_SEARCH_RECONCILE_INTERVAL_SECONDS"],
                 60),
+            ApiToken: configuration["OBSIDIAN_API_TOKEN"] ?? string.Empty,
             TimeZone: ResolveTimeZone(timeZoneId));
     }
 

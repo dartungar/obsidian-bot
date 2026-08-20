@@ -29,3 +29,45 @@ OBSIDIAN_SEARCH_RECONCILE_INTERVAL_SECONDS=60
 ```
 
 Changing the embedding model or dimension count clears only stored vectors; they are regenerated on the next semantic search.
+
+## API
+
+The HTTP API is protected by a bearer token. Set a strong value before exposing the
+container:
+
+```env
+OBSIDIAN_API_TOKEN=...
+OBSIDIAN_API_PORT=8080
+```
+
+With Docker Compose, the API listens on `http://localhost:8080` by default. Every
+`/api` endpoint requires `Authorization: Bearer <OBSIDIAN_API_TOKEN>`; `/healthz`
+is intentionally unauthenticated for container health checks. The default Docker
+binding is loopback-only. To expose it through a TLS-terminating reverse proxy,
+set `OBSIDIAN_API_BIND_ADDRESS=0.0.0.0`; do not expose the bearer token over plain
+HTTP on an untrusted network.
+
+The API exposes the same commands as Telegram at `POST /api/commands/{command}`:
+
+- `add` saves text. Its JSON body requires `content` and `destination`. Capture
+  destinations are `today`, `yesterday`, `inbox`, or `date` (with `date` as
+  `YYYY-MM-DD`). Set `asTask` to `true` to create a task; task destinations are
+  `today`, `tomorrow`, and `inbox`.
+- `search` accepts `query` and returns the combined full-text and semantic results.
+- `semantic` accepts `query` and returns semantic results only.
+- `cancel` is accepted for command parity and returns success. API calls are
+  stateless, so there is no pending server-side capture to clear.
+
+For example:
+
+```bash
+curl --request POST http://localhost:8080/api/commands/add \
+  --header "Authorization: Bearer $OBSIDIAN_API_TOKEN" \
+  --header "Content-Type: application/json" \
+  --data '{"content":"Plan the release","destination":"today"}'
+
+curl --request POST http://localhost:8080/api/commands/search \
+  --header "Authorization: Bearer $OBSIDIAN_API_TOKEN" \
+  --header "Content-Type: application/json" \
+  --data '{"query":"release plan"}'
+```

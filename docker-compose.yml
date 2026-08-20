@@ -14,12 +14,16 @@ services:
       - OBSIDIAN_SEARCH_DATABASE_PATH=${OBSIDIAN_SEARCH_DATABASE_PATH:-.obsidian-bot/search.db}
       - OBSIDIAN_SEARCH_RESULT_LIMIT=${OBSIDIAN_SEARCH_RESULT_LIMIT:-5}
       - OBSIDIAN_SEARCH_RECONCILE_INTERVAL_SECONDS=${OBSIDIAN_SEARCH_RECONCILE_INTERVAL_SECONDS:-60}
+      - OBSIDIAN_API_TOKEN=${OBSIDIAN_API_TOKEN:-}
+      - ASPNETCORE_URLS=http://+:8080
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_EMBEDDINGS_URL=${OPENAI_EMBEDDINGS_URL:-https://api.openai.com/v1/embeddings}
       - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
       - OPENAI_EMBEDDING_DIMENSIONS=${OPENAI_EMBEDDING_DIMENSIONS:-1536}
     volumes:
       - /var/obsidian:/var/notes
+    ports:
+      - "${OBSIDIAN_API_BIND_ADDRESS:-127.0.0.1}:${OBSIDIAN_API_PORT:-8080}:8080"
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "grep -q ObsidianBot.dll /proc/1/cmdline"]

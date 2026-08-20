@@ -9,6 +9,8 @@ Telegram bot for capturing notes, tasks, voice notes, and images into an Obsidia
 
 The bot keeps its local SQLite index at `.obsidian-bot/search.db` by default. It builds the index at startup and watches Markdown files for changes, creating fresh embeddings shortly after a note is created, changed, renamed, or deleted. A full reconciliation runs every 60 seconds by default to cover missed filesystem events. The index is safe to delete; it will be rebuilt automatically.
 
+Search replies use Telegram message entities: note paths are underlined, and common Markdown formatting is preserved in snippets. YAML frontmatter is hidden only in the Telegram response; it remains available to the search index and future API use.
+
 Full-text search works with no external service. Semantic search requires an OpenAI embeddings API key:
 
 ```env

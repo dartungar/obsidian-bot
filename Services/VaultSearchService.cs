@@ -612,8 +612,7 @@ public sealed class VaultSearchService
 
     private static string ToSnippet(string content)
     {
-        var collapsed = Regex.Replace(content, "\\s+", " ").Trim();
-        return collapsed.Length <= 360 ? collapsed : collapsed[..357] + "...";
+        return content.Replace("\r\n", "\n").Trim();
     }
 
     private static byte[] ToBytes(float[] vector)

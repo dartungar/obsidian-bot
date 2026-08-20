@@ -4,8 +4,8 @@ Telegram bot for capturing notes, tasks, voice notes, and images into an Obsidia
 
 ## Search
 
-- `/search <terms>` performs local full-text search across every Markdown note in the vault.
-- `/semantic <query>` finds Markdown notes by meaning using embeddings and `sqlite-vec`.
+- `/search <query>` combines local full-text and semantic results in one response.
+- `/semantic <query>` runs semantic search only using embeddings and `sqlite-vec`.
 
 The bot keeps its local SQLite index at `.obsidian-bot/search.db` by default. It builds the index at startup and watches Markdown files for changes, creating fresh embeddings shortly after a note is created, changed, renamed, or deleted. A full reconciliation runs every 60 seconds by default to cover missed filesystem events. The index is safe to delete; it will be rebuilt automatically.
 

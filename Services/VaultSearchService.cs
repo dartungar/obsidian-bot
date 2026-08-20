@@ -80,6 +80,43 @@ public sealed class VaultSearchService
         }
     }
 
+    public async Task<CombinedSearchResults> SearchCombinedAsync(string query, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return new CombinedSearchResults(
+                Array.Empty<SearchResult>(),
+                Array.Empty<SearchResult>(),
+                _embeddingClient.IsConfigured);
+        }
+
+        var matchQuery = ToFtsMatchQuery(query);
+        await IndexLock.WaitAsync(ct);
+        try
+        {
+            using var connection = CreateConnection();
+            EnsureDatabase(connection);
+            await SyncMarkdownFilesAsync(connection, ct);
+
+            var fullText = string.IsNullOrWhiteSpace(matchQuery)
+                ? Array.Empty<SearchResult>()
+                : SearchFullText(connection, matchQuery);
+            if (!_embeddingClient.IsConfigured)
+            {
+                return new CombinedSearchResults(fullText, Array.Empty<SearchResult>(), false);
+            }
+
+            await EnsureEmbeddingsAsync(connection, ct);
+            var queryEmbedding = (await _embeddingClient.CreateEmbeddingsAsync([query], ct))[0];
+            var semantic = SearchSemantic(connection, queryEmbedding);
+            return new CombinedSearchResults(fullText, semantic, true);
+        }
+        finally
+        {
+            IndexLock.Release();
+        }
+    }
+
     public async Task<IReadOnlyList<SearchResult>> SearchSemanticAsync(string query, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(query))

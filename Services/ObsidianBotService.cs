@@ -242,12 +242,12 @@ public sealed class ObsidianBotService : BackgroundService
 
         try
         {
-            var results = semantic
-                ? await _vaultSearch.SearchSemanticAsync(query, ct)
-                : await _vaultSearch.SearchFullTextAsync(query, ct);
+            var message = semantic
+                ? BuildSearchMessage(await _vaultSearch.SearchSemanticAsync(query, ct), semantic: true)
+                : BuildCombinedSearchMessage(await _vaultSearch.SearchCombinedAsync(query, ct));
             await _bot.SendTextMessageAsync(
                 chatId,
-                BuildSearchMessage(results, semantic),
+                message,
                 replyMarkup: TelegramKeyboards.BuildMainReplyKeyboard(),
                 cancellationToken: ct);
         }
@@ -493,21 +493,48 @@ public sealed class ObsidianBotService : BackgroundService
 
     private static string BuildSearchMessage(IReadOnlyList<SearchResult> results, bool semantic)
     {
+        return BuildSearchSection(
+            semantic ? "Semantic search results" : "Full-text search results",
+            results,
+            semantic,
+            snippetLength: 320);
+    }
+
+    private static string BuildCombinedSearchMessage(CombinedSearchResults results)
+    {
+        var fullText = BuildSearchSection("Full-text results", results.FullText, semantic: false, snippetLength: 180);
+        var semantic = results.SemanticSearchConfigured
+            ? BuildSearchSection("Semantic results", results.Semantic, semantic: true, snippetLength: 180)
+            : "Semantic results:\nSemantic search is not configured. Set OPENAI_API_KEY first.";
+        var message = $"{fullText}\n\n{semantic}";
+        return message.Length <= 3_900 ? message : message[..3_897] + "...";
+    }
+
+    private static string BuildSearchSection(
+        string title,
+        IReadOnlyList<SearchResult> results,
+        bool semantic,
+        int snippetLength)
+    {
         if (results.Count == 0)
         {
-            return "No matching notes found.";
+            return $"{title}:\nNo matching notes found.";
         }
 
-        var title = semantic ? "Semantic search results:" : "Full-text search results:";
         var entries = results.Select(result =>
         {
             var distance = semantic && result.Distance is { } value
                 ? $"\nDistance: {value:F3}"
                 : string.Empty;
-            return $"{result.NotePath}\n{result.Snippet}{distance}";
+            return $"{Truncate(result.NotePath, 180)}\n{Truncate(result.Snippet, snippetLength)}{distance}";
         });
-        var message = title + "\n\n" + string.Join("\n\n", entries);
+        var message = title + ":\n\n" + string.Join("\n\n", entries);
         return message.Length <= 3_900 ? message : message[..3_897] + "...";
+    }
+
+    private static string Truncate(string value, int maxLength)
+    {
+        return value.Length <= maxLength ? value : value[..(maxLength - 3)] + "...";
     }
 
     private static string BuildSavedMessage(SaveResult result)

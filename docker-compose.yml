@@ -63,7 +63,7 @@ services:
       - /var/obsidian:/var/notes:ro
       - obsidian-bot-data:/var/lib/obsidian-bot
     ports:
-      - "${OBSIDIAN_API_BIND_ADDRESS:-127.0.0.1}:${OBSIDIAN_API_PORT:-8080}:8080"
+      - "${OBSIDIAN_API_BIND_ADDRESS:-127.0.0.1}:${OBSIDIAN_API_PORT:-6772}:8080"
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "grep -q ObsidianBot.dll /proc/1/cmdline"]

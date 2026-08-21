@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization.Policy;
 using Microsoft.OpenApi;
 using ObsidianBot.Api;
 using ObsidianBot.Configuration;
@@ -26,6 +27,9 @@ builder.Services.AddSingleton<VaultSearchService>();
 builder.Services.AddSingleton<VaultNotesService>();
 builder.Services.AddSingleton<ProposalStore>();
 builder.Services.AddSingleton<ChangeProposalService>();
+builder.Services.AddSingleton<DirectChangeStore>();
+builder.Services.AddSingleton<DirectChangeSnapshotStore>();
+builder.Services.AddSingleton<DirectChangeService>();
 if (botOptions.RunsTelegram)
 {
     builder.Services.AddSingleton<ObsidianVaultWriter>();
@@ -48,6 +52,7 @@ builder.Services
         ApiTokenAuthenticationHandler.SchemeName,
         _ => { });
 builder.Services.AddAuthorization(ApiAuthorization.Configure);
+builder.Services.AddSingleton<IAuthorizationMiddlewareResultHandler, ApiAuthorizationResultHandler>();
 builder.Services.AddOpenApi("v1", options =>
 {
     options.ShouldInclude = description => description.GroupName == "v1";
@@ -56,10 +61,10 @@ builder.Services.AddOpenApi("v1", options =>
         document.Info = new()
         {
             Title = "Obsidian Agent Capture API",
-            Version = "v0.1",
-            Description = "Review-first API for agents to read approved vault content and create immutable change proposals. " +
-                          "Use OBSIDIAN_AGENT_API_TOKEN for note access and proposal creation. " +
-                          "Use OBSIDIAN_REVIEW_API_TOKEN only for human review, publication status, and audit events."
+            Version = "v0.2",
+            Description = "Controlled vault API for agents. Routine create and append operations are revision-checked, " +
+                          "atomic, audited, and reversible; the v0.1 proposal/review workflow remains available for " +
+                          "review-required work. Use OBSIDIAN_AGENT_API_TOKEN for scoped agent operations."
         };
         document.Components ??= new OpenApiComponents();
         document.Components.SecuritySchemes = new Dictionary<string, IOpenApiSecurityScheme>
@@ -70,8 +75,9 @@ builder.Services.AddOpenApi("v1", options =>
                 Scheme = "bearer",
                 In = ParameterLocation.Header,
                 BearerFormat = "API token",
-                Description = "Send `Authorization: Bearer <token>`. Agent tokens may read notes and create/read proposals; " +
-                              "reviewer tokens may review proposals and read audit events."
+                Description = "Send `Authorization: Bearer <token>`. Agent tokens may read notes, make permitted direct " +
+                              "changes, undo their own direct changes, and create/read proposals; reviewer tokens may " +
+                              "review proposals and read audit events."
             }
         };
 

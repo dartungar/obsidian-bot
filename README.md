@@ -30,19 +30,25 @@ OBSIDIAN_SEARCH_RECONCILE_INTERVAL_SECONDS=60
 
 Changing the embedding model or dimension count clears only stored vectors; they are regenerated on the next semantic search.
 
-## Agent capture API
+## Agent vault API
 
-`/v1` implements the review-first capture loop in [agent-capture.md](agent-capture.md):
-an agent may search, read, and create immutable proposals; a separate reviewer
-credential approves an exact server-generated preview; an internal publisher is
-the only component that writes to the vault.
+`/v1` is a controlled editor for the real vault. It exposes search and read
+operations plus narrowly scoped, revision-checked direct changes:
+`create_note`, `append_section`, and `append_task`. Each successful change is
+written atomically, audited, snapshotted, and undoable by the same agent during
+the configured undo window. The API never accepts arbitrary filesystem paths,
+whole-note replacements, moves, or deletes.
 
-The machine-readable contract is publicly available at
-`GET /openapi/v1.json`. It contains every `/v1` route, request and response
-schema, bearer-token setup, and operation descriptions; no token is included in
-the document. Agents should retrieve it before their first API call.
+The existing proposal/review flow remains available at `/v1/change-proposals`
+for Tier 2 work such as replacement, frontmatter changes, or broad edits. The
+agent token cannot approve proposals.
 
-Configure distinct strong tokens and explicit writable folders:
+Retrieve `GET /openapi/v1.json` before the first API call and use
+`GET /v1/capabilities` to discover the server-enforced direct-edit policy.
+Search and note responses advertise which direct operations and section IDs are
+currently eligible.
+
+Configure strong, separate tokens and the server-side policy:
 
 ```env
 OBSIDIAN_AGENT_API_TOKEN=...
@@ -50,58 +56,59 @@ OBSIDIAN_REVIEW_API_TOKEN=...
 OBSIDIAN_AGENT_WRITABLE_FOLDERS=_inbox,01 projects
 # Optional: limit agent reads too. An empty value permits all non-denied folders.
 OBSIDIAN_AGENT_READABLE_FOLDERS=01 projects,_inbox
+OBSIDIAN_AGENT_DIRECT_ALLOWED_HEADINGS=Notes,Decisions,Tasks,Next Steps,Journal,Agent Capture
+OBSIDIAN_DIRECT_CHANGE_MAX_CONTENT_BYTES=25600
+OBSIDIAN_DIRECT_CHANGE_UNDO_WINDOW_SECONDS=86400
 ```
+
+Protected paths are denied regardless of agent input: `.obsidian`, `.git`,
+`attachments`, `templates`, and `04 archive` (plus any configured denied path).
+The agent token is scoped to `notes:read`, `notes:create`,
+`notes:append-section`, `notes:append-task`, `changes:read`, and
+`changes:undo-own`, as well as the legacy proposal-create/read scopes.
 
 The Compose deployment runs three roles from the same image:
 
-- `obsidian-agent-api` exposes `/v1` and receives `/var/notes` read-only.
-- `obsidian-publisher` has the read/write vault mount, no host port, and applies
-  only approved proposals.
-- `obsidian-bot` retains the Telegram workflow but has no host-published API port
+- `obsidian-agent-api` exposes `/v1`, has the writable vault mount, and enforces
+  direct-edit policy, locking, snapshots, and atomic writes.
+- `obsidian-publisher` has a writable vault mount, no host port, and applies only
+  approved legacy proposals.
+- `obsidian-bot` retains the Telegram workflow and has no host-published API port
   in the supplied Compose file.
 
-The proposal database and reversible JSON snapshots live in the shared
-`obsidian-bot-data` volume, outside the vault. The API refuses to expose
-`.obsidian`, attachments, templates, archive folders, and configured denied paths.
-New-note and append destinations must be in `OBSIDIAN_AGENT_WRITABLE_FOLDERS`;
-the conservative default is `_inbox` only.
+The change database and snapshots reside in the shared `obsidian-bot-data`
+volume outside the vault.
 
-Agent-token scopes are `notes:read`, `proposals:create`, and `proposals:read`.
-Reviewer tokens have `proposals:review`, `proposals:read`, and `audit:read`.
-The agent token cannot call the review endpoint or publish a change.
-
-Typical existing-note flow:
+Typical direct append:
 
 ```bash
-# 1. Search, then retrieve the candidate's headings/section.
+# 1. Search or read the note to obtain opaque note/section IDs and its revision.
 curl --get http://localhost:8080/v1/notes \
   --header "Authorization: Bearer $OBSIDIAN_AGENT_API_TOKEN" \
   --data-urlencode 'q=checkout routing' \
   --data-urlencode 'mode=hybrid' \
   --data-urlencode 'include=headings,snippet'
 
-# 2. Create an immutable, server-previewed append proposal.
-curl --request POST http://localhost:8080/v1/change-proposals \
+# 2. Apply one allowed, additive edit.
+curl --request POST http://localhost:8080/v1/note-changes \
   --header "Authorization: Bearer $OBSIDIAN_AGENT_API_TOKEN" \
   --header 'Idempotency-Key: 7825a1b1-...' \
   --header 'Content-Type: application/json' \
   --data '{
-    "type":"append_section",
-    "target":{"noteId":"note_...","baseRevision":"sha256:...","sectionId":"section_..."},
-    "contentMarkdown":"- 2026-08-19 — Decision text.",
-    "rationale":"This belongs in the project Decisions section."
+    "operation":"append_section",
+    "noteId":"note_...",
+    "sectionId":"section_...",
+    "baseRevision":"sha256:...",
+    "contentMarkdown":"- 2026-08-21 — Decision text.",
+    "rationale":"This is the named project note and its Decisions section is allowed.",
+    "origin":{"conversationId":"chat_...","requestExcerpt":"Add the decision."}
   }'
 
-# 3. A human approves precisely the returned preview hash.
-curl --request POST http://localhost:8080/v1/change-proposals/proposal_.../reviews \
-  --header "Authorization: Bearer $OBSIDIAN_REVIEW_API_TOKEN" \
-  --header 'Content-Type: application/json' \
-  --data '{"decision":"approved","approvedPreviewHash":"sha256:..."}'
+# 3. Undo only after an explicit user request.
+curl --request POST http://localhost:8080/v1/changes/change_.../undo \
+  --header "Authorization: Bearer $OBSIDIAN_AGENT_API_TOKEN"
 ```
 
-The publisher re-reads the note and its opaque section, checks the original
-revision, creates a snapshot, and writes atomically. Any intervening change
-transitions the proposal to `conflicted`; it is never rebased or overwritten.
-Use `GET /v1/change-proposals/{proposal_id}/publication` to observe the outcome
-and `GET /v1/audit-events?proposal_id={proposal_id}` with the reviewer token to
-inspect its audit trail.
+A stale revision returns `409 REVISION_CONFLICT` without changing the file. A
+repeat with the same idempotency key returns the original direct-change result;
+reusing that key for different content returns `409 IDEMPOTENCY_KEY_REUSED`.

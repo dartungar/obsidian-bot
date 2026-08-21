@@ -117,7 +117,8 @@ public sealed class VaultNotesService
             note.Revision,
             includes.Contains("frontmatter") ? note.Frontmatter : null,
             includes.Contains("headings") ? note.Sections.Select(ToSectionSummary).ToArray() : null,
-            includes.Contains("content") ? note.Content : null);
+            includes.Contains("content") ? note.Content : null,
+            GetNotePolicy(note));
     }
 
     public AgentSectionResponse? GetSectionResponse(VaultNote note, string sectionId, int contextLines)
@@ -162,9 +163,42 @@ public sealed class VaultNotesService
             outgoing,
             Array.Empty<NoteLinkReference>(),
             note.Tags,
-            new NotePolicy(
-                _accessPolicy.CanWrite(note.Path),
-                _accessPolicy.CanWrite(note.Path) ? ["append_section"] : Array.Empty<string>()));
+            GetNotePolicy(note));
+    }
+
+    public NotePolicy GetNotePolicy(VaultNote note)
+    {
+        var appendableSections = note.Sections
+            .Where(section => CanDirectAppend(note, section, isTask: false))
+            .ToArray();
+        var operations = new List<string>();
+        if (appendableSections.Length > 0)
+        {
+            operations.Add("append_section");
+        }
+
+        if (appendableSections.Any(section => CanDirectAppend(note, section, isTask: true)))
+        {
+            operations.Add("append_task");
+        }
+
+        return new NotePolicy(
+            Readable: _accessPolicy.CanRead(note.Path),
+            DirectOperations: operations,
+            AllowedSectionIds: appendableSections.Select(section => section.Id).ToArray(),
+            RequiresReviewFor: ["replace_section", "set_frontmatter"]);
+    }
+
+    public bool CanDirectAppend(VaultNote note, VaultSection section, bool isTask)
+    {
+        if (!_accessPolicy.CanWrite(note.Path) || section.HeadingPath.Count == 0)
+        {
+            return false;
+        }
+
+        var heading = section.HeadingPath[^1];
+        return _options.AgentDirectAllowedHeadings.Contains(heading, StringComparer.OrdinalIgnoreCase) &&
+               (!isTask || string.Equals(heading, "Tasks", StringComparison.OrdinalIgnoreCase));
     }
 
     public bool TryResolveWritableDestination(
@@ -312,7 +346,11 @@ public sealed class VaultNotesService
 
     public string GetRevision(string content) => "sha256:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content))).ToLowerInvariant();
 
-    public IReadOnlyList<WritableFolder> GetWritableFolders() => _accessPolicy.GetWritableFolders();
+    public IReadOnlyList<WritableFolder> GetWritableFolders() => _accessPolicy.GetWritableFolders()
+        .Where(folder => Directory.Exists(Path.Combine(
+            _options.VaultPath,
+            folder.Path.Replace('/', Path.DirectorySeparatorChar))))
+        .ToArray();
 
     private async Task<IReadOnlyList<RankedSearchResult>> SearchRankedAsync(
         string query,
@@ -388,7 +426,8 @@ public sealed class VaultNotesService
             matchingSections,
             note.Revision,
             includes.Contains("frontmatter") ? note.Frontmatter : null,
-            includes.Contains("headings") ? note.Sections.Select(ToSectionSummary).ToArray() : null);
+            includes.Contains("headings") ? note.Sections.Select(ToSectionSummary).ToArray() : null,
+            GetNotePolicy(note));
     }
 
     private async Task<IReadOnlyList<NoteLinkReference>> GetOutgoingLinksAsync(VaultNote note, int limit, CancellationToken ct)
@@ -650,10 +689,8 @@ public sealed class VaultNotesService
             var pathKey = string.Join("\u001f", current.HeadingPath);
             occurrences.TryGetValue(pathKey, out var occurrence);
             occurrences[pathKey] = occurrence + 1;
-            var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
-                Slice(content, current.ContentStartOffset, endOffset)))).ToLowerInvariant();
             sections.Add(new VaultSection(
-                "section_" + ShortHash($"{noteId}\n{pathKey}\n{occurrence}\n{fingerprint}"),
+                "section_" + ShortHash($"{noteId}\n{pathKey}\n{occurrence}"),
                 current.HeadingPath,
                 current.Level,
                 current.HeadingLineIndex,

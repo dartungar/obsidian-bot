@@ -64,7 +64,16 @@ public sealed class ApiTokenAuthenticationHandler : AuthenticationHandler<Authen
                 _botOptions.AgentApiToken,
                 "agent",
                 "agent",
-                ["notes:read", "proposals:create", "proposals:read"]),
+                [
+                    "notes:read",
+                    "notes:create",
+                    "notes:append-section",
+                    "notes:append-task",
+                    "changes:read",
+                    "changes:undo-own",
+                    "proposals:create",
+                    "proposals:read"
+                ]),
             new ApiCredential(
                 _botOptions.ReviewApiToken,
                 "reviewer",
@@ -94,7 +103,9 @@ public sealed class ApiTokenAuthenticationHandler : AuthenticationHandler<Authen
     {
         Response.StatusCode = StatusCodes.Status401Unauthorized;
         Response.Headers["WWW-Authenticate"] = "Bearer";
-        return Task.CompletedTask;
+        return Response.WriteAsJsonAsync(new ObsidianBot.Models.ApiErrorResponse(
+            "AUTHENTICATION_REQUIRED",
+            "A valid bearer token is required."));
     }
 
     private sealed record ApiCredential(string Token, string Name, string ActorType, IReadOnlyList<string> Scopes);

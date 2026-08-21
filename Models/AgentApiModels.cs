@@ -25,7 +25,8 @@ public sealed record AgentNoteSearchResult(
     IReadOnlyList<SectionSummary> MatchingSections,
     string Revision,
     IReadOnlyDictionary<string, object?>? Frontmatter = null,
-    IReadOnlyList<SectionSummary>? Headings = null);
+    IReadOnlyList<SectionSummary>? Headings = null,
+    NotePolicy? Policy = null);
 
 public sealed record SectionSummary(string Id, IReadOnlyList<string> HeadingPath, int Level);
 
@@ -38,7 +39,8 @@ public sealed record AgentNoteResponse(
     string Revision,
     IReadOnlyDictionary<string, object?>? Frontmatter,
     IReadOnlyList<SectionSummary>? Headings,
-    string? Content);
+    string? Content,
+    NotePolicy Policy);
 
 public sealed record AgentSectionResponse(
     string Id,
@@ -57,7 +59,73 @@ public sealed record AgentLinksResponse(
     IReadOnlyList<string> Tags,
     NotePolicy Policy);
 
-public sealed record NotePolicy(bool Editable, IReadOnlyList<string> AllowedProposalTypes);
+public sealed record NotePolicy(
+    bool Readable,
+    IReadOnlyList<string> DirectOperations,
+    IReadOnlyList<string> AllowedSectionIds,
+    IReadOnlyList<string> RequiresReviewFor);
+
+public sealed record AgentCapabilitiesResponse(
+    string ApiVersion,
+    IReadOnlyList<string> DirectOperations,
+    IReadOnlyList<IReadOnlyList<string>> AllowedHeadingPaths,
+    IReadOnlyList<WritableFolder> WritableFolders,
+    IReadOnlyList<string> ProtectedPathPrefixes,
+    int MaxDirectContentBytes,
+    int UndoWindowSeconds);
+
+public sealed record DirectNoteChangeRequest(
+    string? Operation,
+    string? NoteId,
+    string? SectionId,
+    string? BaseRevision,
+    string? ContentMarkdown,
+    string? TaskMarkdown,
+    string? FolderId,
+    string? Filename,
+    string? OnConflict,
+    Dictionary<string, JsonElement>? Frontmatter,
+    string? Rationale,
+    ProposalOriginRequest? Origin,
+    bool DryRun = false);
+
+public sealed record DirectChangeSection(string Id, IReadOnlyList<string> HeadingPath);
+
+public sealed record DirectChangeUndo(bool Available, DateTimeOffset? ExpiresAt);
+
+public sealed record DirectChangeResponse(
+    string? ChangeId,
+    string Status,
+    string Operation,
+    string Path,
+    DirectChangeSection? Section,
+    string? SnapshotId,
+    string? BeforeRevision,
+    string? AfterRevision,
+    string UnifiedDiff,
+    DirectChangeUndo Undo);
+
+public sealed record UndoDirectChangeResponse(
+    string ChangeId,
+    string Status,
+    string RevertedChangeId,
+    string Path,
+    string? SnapshotId,
+    string? BeforeRevision,
+    string? AfterRevision);
+
+public sealed record ApiErrorResponse(
+    string Code,
+    string Message,
+    string? NoteId = null,
+    string? SectionId = null,
+    string? ExpectedRevision = null,
+    string? CurrentRevision = null,
+    string? RecommendedAction = null,
+    string? RequestedOperation = null,
+    string? Reason = null,
+    IReadOnlyList<string>? AllowedOperations = null,
+    IReadOnlyList<string>? WritableFolderIds = null);
 
 public sealed record CreateChangeProposalRequest(
     string? Type,

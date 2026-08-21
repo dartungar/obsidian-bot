@@ -24,6 +24,9 @@ public sealed record ObsidianBotOptions(
     IReadOnlyList<string> AgentReadableFolders,
     IReadOnlyList<string> AgentWritableFolders,
     IReadOnlyList<string> AgentDeniedFolders,
+    IReadOnlyList<string> AgentDirectAllowedHeadings,
+    int DirectChangeMaxContentBytes,
+    TimeSpan DirectChangeUndoWindow,
     TimeSpan ProposalTtl,
     int ProposalMaxMarkdownLength,
     int PublisherPollIntervalSeconds,
@@ -106,7 +109,16 @@ public sealed record ObsidianBotOptions(
             AgentWritableFolders: ParsePathList(configuration["OBSIDIAN_AGENT_WRITABLE_FOLDERS"], "_inbox"),
             AgentDeniedFolders: ParsePathList(
                 configuration["OBSIDIAN_AGENT_DENIED_FOLDERS"],
-                ".obsidian,.git,attachments,templates,archive"),
+                ".obsidian,.git,attachments,templates,04 archive"),
+            AgentDirectAllowedHeadings: ParseValueList(
+                configuration["OBSIDIAN_AGENT_DIRECT_ALLOWED_HEADINGS"],
+                "Notes,Decisions,Tasks,Next Steps,Journal,Agent Capture"),
+            DirectChangeMaxContentBytes: ParsePositiveInt(
+                configuration["OBSIDIAN_DIRECT_CHANGE_MAX_CONTENT_BYTES"],
+                25_600),
+            DirectChangeUndoWindow: TimeSpan.FromSeconds(ParsePositiveInt(
+                configuration["OBSIDIAN_DIRECT_CHANGE_UNDO_WINDOW_SECONDS"],
+                86_400)),
             ProposalTtl: TimeSpan.FromHours(ParsePositiveInt(configuration["OBSIDIAN_PROPOSAL_TTL_HOURS"], 24)),
             ProposalMaxMarkdownLength: ParsePositiveInt(configuration["OBSIDIAN_PROPOSAL_MAX_MARKDOWN_LENGTH"], 20_000),
             PublisherPollIntervalSeconds: ParsePositiveInt(
@@ -137,6 +149,13 @@ public sealed record ObsidianBotOptions(
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
+
+    private static IReadOnlyList<string> ParseValueList(string? value, string fallback) =>
+        (value ?? fallback)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
     private static Uri ParseUri(string? value, string fallback)
     {

@@ -34,6 +34,12 @@ public sealed class VaultAccessPolicy
         .Select(folder => new WritableFolder("folder_" + ShortHash("folder\n" + folder), folder))
         .ToArray();
 
+    public IReadOnlyList<string> GetProtectedPathPrefixes() => _options.AgentDeniedFolders
+        .Select(NormalizePath)
+        .Where(folder => !string.IsNullOrWhiteSpace(folder))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+
     public static bool IsWithinFolder(string path, string folder)
     {
         var normalizedFolder = NormalizePath(folder);

@@ -11,12 +11,18 @@ public static class AgentApiEndpoints
     public static void Map(RouteGroupBuilder api)
     {
         api.MapGet("/", () => Results.Ok(new AgentApiDiscoveryResponse(
-            "v0.1",
+            "v0.2",
             "/openapi/v1.json",
-            ["notes", "change-proposals", "audit-events"])))
+            ["capabilities", "notes", "note-changes", "changes", "change-proposals", "audit-events"])))
             .WithSummary("Discover agent API resources")
             .WithDescription("Use the public OpenAPI document at `/openapi/v1.json` to discover the full contract.")
             .Produces<AgentApiDiscoveryResponse>(StatusCodes.Status200OK)
+            .RequireAuthorization(ApiAuthorization.AgentReadPolicy);
+
+        api.MapGet("/capabilities", (DirectChangeService changes) => Results.Ok(changes.GetCapabilities()))
+            .WithSummary("Get current direct-edit capabilities")
+            .WithDescription("Returns the server-enforced direct-edit policy. Clients cannot override this policy in a mutation request.")
+            .Produces<AgentCapabilitiesResponse>(StatusCodes.Status200OK)
             .RequireAuthorization(ApiAuthorization.AgentReadPolicy);
 
         api.MapGet("/notes", SearchNotesAsync)
@@ -45,6 +51,29 @@ public static class AgentApiEndpoints
             .Produces<AgentLinksResponse>(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status404NotFound)
             .RequireAuthorization(ApiAuthorization.AgentReadPolicy);
+
+        api.MapPost("/note-changes", ApplyDirectChangeAsync)
+            .WithSummary("Apply one permitted direct note change")
+            .WithDescription("Requires Idempotency-Key. Applies only a policy-permitted create or additive section/task append; dryRun validates without writing.")
+            .Produces<DirectChangeResponse>(StatusCodes.Status201Created)
+            .Produces<DirectChangeResponse>(StatusCodes.Status200OK)
+            .Produces<ApiErrorResponse>(StatusCodes.Status400BadRequest)
+            .Produces<ApiErrorResponse>(StatusCodes.Status409Conflict)
+            .Produces<ApiErrorResponse>(StatusCodes.Status413PayloadTooLarge)
+            .Produces<ApiErrorResponse>(StatusCodes.Status422UnprocessableEntity)
+            .RequireAuthorization(ApiAuthorization.DirectChangePolicy);
+        api.MapGet("/changes/{changeId}", GetDirectChangeAsync)
+            .WithSummary("Read one of the caller's direct changes")
+            .Produces<DirectChangeResponse>(StatusCodes.Status200OK)
+            .Produces<ApiErrorResponse>(StatusCodes.Status404NotFound)
+            .RequireAuthorization(ApiAuthorization.ChangeReadPolicy);
+        api.MapPost("/changes/{changeId}/undo", UndoDirectChangeAsync)
+            .WithSummary("Undo one of the caller's direct changes")
+            .WithDescription("Undo is available only within the configured window while the note is still at the direct change's resulting revision.")
+            .Produces<UndoDirectChangeResponse>(StatusCodes.Status201Created)
+            .Produces<ApiErrorResponse>(StatusCodes.Status409Conflict)
+            .Produces<ApiErrorResponse>(StatusCodes.Status422UnprocessableEntity)
+            .RequireAuthorization(ApiAuthorization.ChangeUndoPolicy);
 
         api.MapPost("/change-proposals", CreateProposalAsync)
             .WithSummary("Create an immutable change proposal")
@@ -184,6 +213,61 @@ public static class AgentApiEndpoints
                 : Results.Created($"/v1/change-proposals/{response.Id}", response);
         }, logger);
 
+    private static async Task<IResult> ApplyDirectChangeAsync(
+        DirectNoteChangeRequest request,
+        [FromHeader(Name = "Idempotency-Key")] string idempotencyKey,
+        HttpContext httpContext,
+        DirectChangeService changes,
+        ILogger<Program> logger,
+        CancellationToken ct) =>
+        await ExecuteAsync(async () =>
+        {
+            var requiredScope = ApiAuthorization.GetRequiredDirectScope(request.Operation);
+            if (requiredScope is not null && !httpContext.User.HasClaim("scope", requiredScope))
+            {
+                return Results.Json(new ApiErrorResponse(
+                    "OPERATION_NOT_ALLOWED",
+                    "The credential does not allow the requested direct operation.",
+                    RequestedOperation: request.Operation),
+                    statusCode: StatusCodes.Status403Forbidden);
+            }
+
+            var actor = httpContext.User.Identity?.Name ?? "agent";
+            var result = await changes.ApplyAsync(request, actor, idempotencyKey, ct);
+            return result.Response.Status == "validated" || result.IsIdempotentReplay
+                ? Results.Ok(result.Response)
+                : Results.Created($"/v1/changes/{result.Response.ChangeId}", result.Response);
+        }, logger);
+
+    private static async Task<IResult> GetDirectChangeAsync(
+        string changeId,
+        HttpContext httpContext,
+        DirectChangeService changes,
+        ILogger<Program> logger,
+        CancellationToken ct) =>
+        await ExecuteAsync(async () =>
+        {
+            var actor = httpContext.User.Identity?.Name ?? "agent";
+            var response = await changes.GetAsync(changeId, actor, ct);
+            return response is null
+                ? Results.Json(new ApiErrorResponse("CHANGE_NOT_FOUND", "The direct change was not found."),
+                    statusCode: StatusCodes.Status404NotFound)
+                : Results.Ok(response);
+        }, logger);
+
+    private static async Task<IResult> UndoDirectChangeAsync(
+        string changeId,
+        HttpContext httpContext,
+        DirectChangeService changes,
+        ILogger<Program> logger,
+        CancellationToken ct) =>
+        await ExecuteAsync(async () =>
+        {
+            var actor = httpContext.User.Identity?.Name ?? "agent";
+            var response = await changes.UndoAsync(changeId, actor, ct);
+            return Results.Created($"/v1/changes/{response.ChangeId}", response);
+        }, logger);
+
     private static async Task<IResult> ListProposalsAsync(
         string? state,
         ChangeProposalService proposals,
@@ -256,6 +340,10 @@ public static class AgentApiEndpoints
         try
         {
             return await operation();
+        }
+        catch (DirectChangeException ex)
+        {
+            return Results.Json(ex.Error, statusCode: ex.StatusCode);
         }
         catch (ProposalConflictException ex)
         {

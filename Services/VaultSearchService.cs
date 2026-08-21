@@ -19,16 +19,19 @@ public sealed class VaultSearchService
 
     private readonly ILogger<VaultSearchService> _logger;
     private readonly ObsidianBotOptions _options;
+    private readonly VaultAccessPolicy _accessPolicy;
     private readonly OpenAiEmbeddingClient _embeddingClient;
     private readonly string _connectionString;
 
     public VaultSearchService(
         ILogger<VaultSearchService> logger,
         ObsidianBotOptions options,
+        VaultAccessPolicy accessPolicy,
         OpenAiEmbeddingClient embeddingClient)
     {
         _logger = logger;
         _options = options;
+        _accessPolicy = accessPolicy;
         _embeddingClient = embeddingClient;
         _connectionString = new SqliteConnectionStringBuilder
         {
@@ -38,7 +41,13 @@ public sealed class VaultSearchService
         }.ToString();
     }
 
-    public async Task<IReadOnlyList<SearchResult>> SearchFullTextAsync(string query, CancellationToken ct)
+    public Task<IReadOnlyList<SearchResult>> SearchFullTextAsync(string query, CancellationToken ct) =>
+        SearchFullTextAsync(query, ResultLimit, ct);
+
+    public async Task<IReadOnlyList<SearchResult>> SearchFullTextAsync(
+        string query,
+        int maxResults,
+        CancellationToken ct)
     {
         var matchQuery = ToFtsMatchQuery(query);
         if (string.IsNullOrWhiteSpace(matchQuery))
@@ -52,7 +61,7 @@ public sealed class VaultSearchService
             using var connection = CreateConnection();
             EnsureDatabase(connection);
             await SyncMarkdownFilesAsync(connection, ct);
-            return SearchFullText(connection, matchQuery);
+            return SearchFullText(connection, matchQuery, NormalizeResultLimit(maxResults));
         }
         finally
         {
@@ -80,7 +89,13 @@ public sealed class VaultSearchService
         }
     }
 
-    public async Task<CombinedSearchResults> SearchCombinedAsync(string query, CancellationToken ct)
+    public Task<CombinedSearchResults> SearchCombinedAsync(string query, CancellationToken ct) =>
+        SearchCombinedAsync(query, ResultLimit, ct);
+
+    public async Task<CombinedSearchResults> SearchCombinedAsync(
+        string query,
+        int maxResults,
+        CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(query))
         {
@@ -91,6 +106,7 @@ public sealed class VaultSearchService
         }
 
         var matchQuery = ToFtsMatchQuery(query);
+        maxResults = NormalizeResultLimit(maxResults);
         await IndexLock.WaitAsync(ct);
         try
         {
@@ -100,7 +116,7 @@ public sealed class VaultSearchService
 
             var fullText = string.IsNullOrWhiteSpace(matchQuery)
                 ? Array.Empty<SearchResult>()
-                : SearchFullText(connection, matchQuery);
+                : SearchFullText(connection, matchQuery, maxResults);
             if (!_embeddingClient.IsConfigured)
             {
                 return new CombinedSearchResults(fullText, Array.Empty<SearchResult>(), false);
@@ -108,7 +124,7 @@ public sealed class VaultSearchService
 
             await EnsureEmbeddingsAsync(connection, ct);
             var queryEmbedding = (await _embeddingClient.CreateEmbeddingsAsync([query], ct))[0];
-            var semantic = SearchSemantic(connection, queryEmbedding);
+            var semantic = SearchSemantic(connection, queryEmbedding, maxResults);
             return new CombinedSearchResults(fullText, semantic, true);
         }
         finally
@@ -117,7 +133,13 @@ public sealed class VaultSearchService
         }
     }
 
-    public async Task<IReadOnlyList<SearchResult>> SearchSemanticAsync(string query, CancellationToken ct)
+    public Task<IReadOnlyList<SearchResult>> SearchSemanticAsync(string query, CancellationToken ct) =>
+        SearchSemanticAsync(query, ResultLimit, ct);
+
+    public async Task<IReadOnlyList<SearchResult>> SearchSemanticAsync(
+        string query,
+        int maxResults,
+        CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(query))
         {
@@ -133,7 +155,7 @@ public sealed class VaultSearchService
             await EnsureEmbeddingsAsync(connection, ct);
 
             var queryEmbedding = (await _embeddingClient.CreateEmbeddingsAsync([query], ct))[0];
-            return SearchSemantic(connection, queryEmbedding);
+            return SearchSemantic(connection, queryEmbedding, NormalizeResultLimit(maxResults));
         }
         finally
         {
@@ -273,8 +295,14 @@ public sealed class VaultSearchService
 
             try
             {
-                var content = await File.ReadAllTextAsync(fullPath, ct);
                 var relativePath = Path.GetRelativePath(_options.VaultPath, fullPath).Replace('\\', '/');
+                // The agent search database must never retain or embed notes outside its read policy.
+                if (_options.RunsAgentApi && !_accessPolicy.CanRead(relativePath))
+                {
+                    continue;
+                }
+
+                var content = await File.ReadAllTextAsync(fullPath, ct);
                 files[relativePath] = new IndexedFile(content, Hash(content));
             }
             catch (IOException ex)
@@ -343,7 +371,10 @@ public sealed class VaultSearchService
         }
     }
 
-    private IReadOnlyList<SearchResult> SearchFullText(SqliteConnection connection, string matchQuery)
+    private IReadOnlyList<SearchResult> SearchFullText(
+        SqliteConnection connection,
+        string matchQuery,
+        int resultLimit)
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -355,13 +386,16 @@ public sealed class VaultSearchService
             LIMIT @limit;
             """;
         command.Parameters.AddWithValue("@query", matchQuery);
-        command.Parameters.AddWithValue("@limit", CandidateLimit);
+        command.Parameters.AddWithValue("@limit", CandidateLimit(resultLimit));
 
         using var reader = command.ExecuteReader();
-        return ReadDistinctResults(reader, includeDistance: false);
+        return ReadDistinctResults(reader, includeDistance: false, resultLimit);
     }
 
-    private IReadOnlyList<SearchResult> SearchSemantic(SqliteConnection connection, float[] embedding)
+    private IReadOnlyList<SearchResult> SearchSemantic(
+        SqliteConnection connection,
+        float[] embedding,
+        int resultLimit)
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -377,18 +411,21 @@ public sealed class VaultSearchService
             """;
         var embeddingParameter = command.Parameters.Add("@embedding", SqliteType.Blob);
         embeddingParameter.Value = ToBytes(embedding);
-        command.Parameters.AddWithValue("@limit", CandidateLimit);
+        command.Parameters.AddWithValue("@limit", CandidateLimit(resultLimit));
 
         using var reader = command.ExecuteReader();
-        return ReadDistinctResults(reader, includeDistance: true);
+        return ReadDistinctResults(reader, includeDistance: true, resultLimit);
     }
 
-    private IReadOnlyList<SearchResult> ReadDistinctResults(SqliteDataReader reader, bool includeDistance)
+    private IReadOnlyList<SearchResult> ReadDistinctResults(
+        SqliteDataReader reader,
+        bool includeDistance,
+        int resultLimit)
     {
         var results = new List<SearchResult>();
         var paths = new HashSet<string>(StringComparer.Ordinal);
 
-        while (reader.Read() && results.Count < ResultLimit)
+        while (reader.Read() && results.Count < resultLimit)
         {
             var path = reader.GetString(0);
             if (!paths.Add(path))
@@ -623,7 +660,10 @@ public sealed class VaultSearchService
     }
 
     private int ResultLimit => Math.Clamp(_options.SearchResultLimit, 1, 20);
-    private int CandidateLimit => ResultLimit * 4;
+
+    private static int NormalizeResultLimit(int value) => Math.Clamp(value, 1, 200);
+
+    private static int CandidateLimit(int resultLimit) => resultLimit * 4;
 
     private sealed record IndexedFile(string Content, string Hash);
     private sealed record IndexedChunk(long Id, string Content);

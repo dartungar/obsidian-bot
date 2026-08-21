@@ -31,11 +31,6 @@ public sealed class ApiTokenAuthenticationHandler : AuthenticationHandler<Authen
             return Task.FromResult(AuthenticateResult.NoResult());
         }
 
-        if (string.IsNullOrWhiteSpace(_botOptions.ApiToken))
-        {
-            return Task.FromResult(AuthenticateResult.Fail("OBSIDIAN_API_TOKEN is not configured."));
-        }
-
         if (!AuthenticationHeaderValue.TryParse(authorization.ToString(), out var header) ||
             !string.Equals(header.Scheme, "Bearer", StringComparison.OrdinalIgnoreCase) ||
             string.IsNullOrEmpty(header.Parameter))
@@ -43,19 +38,56 @@ public sealed class ApiTokenAuthenticationHandler : AuthenticationHandler<Authen
             return Task.FromResult(AuthenticateResult.Fail("A bearer token is required."));
         }
 
-        var supplied = Encoding.UTF8.GetBytes(header.Parameter);
-        var expected = Encoding.UTF8.GetBytes(_botOptions.ApiToken);
-        if (!CryptographicOperations.FixedTimeEquals(supplied, expected))
+        var credential = FindCredential(header.Parameter);
+        if (credential is null)
         {
             return Task.FromResult(AuthenticateResult.Fail("Invalid bearer token."));
         }
 
         var identity = new ClaimsIdentity(
-            [new Claim(ClaimTypes.Name, "obsidian-api")],
+            [
+                new Claim(ClaimTypes.Name, credential.Name),
+                new Claim("actor_type", credential.ActorType),
+                .. credential.Scopes.Select(scope => new Claim("scope", scope))
+            ],
             SchemeName);
         var principal = new ClaimsPrincipal(identity);
         var ticket = new AuthenticationTicket(principal, SchemeName);
         return Task.FromResult(AuthenticateResult.Success(ticket));
+    }
+
+    private ApiCredential? FindCredential(string suppliedToken)
+    {
+        var credentials = new[]
+        {
+            new ApiCredential(
+                _botOptions.AgentApiToken,
+                "agent",
+                "agent",
+                ["notes:read", "proposals:create", "proposals:read"]),
+            new ApiCredential(
+                _botOptions.ReviewApiToken,
+                "reviewer",
+                "human",
+                ["proposals:read", "proposals:review", "audit:read"])
+        };
+
+        var supplied = Encoding.UTF8.GetBytes(suppliedToken);
+        foreach (var credential in credentials)
+        {
+            if (string.IsNullOrWhiteSpace(credential.Token))
+            {
+                continue;
+            }
+
+            var expected = Encoding.UTF8.GetBytes(credential.Token);
+            if (CryptographicOperations.FixedTimeEquals(supplied, expected))
+            {
+                return credential;
+            }
+        }
+
+        return null;
     }
 
     protected override Task HandleChallengeAsync(AuthenticationProperties properties)
@@ -64,4 +96,6 @@ public sealed class ApiTokenAuthenticationHandler : AuthenticationHandler<Authen
         Response.Headers["WWW-Authenticate"] = "Bearer";
         return Task.CompletedTask;
     }
+
+    private sealed record ApiCredential(string Token, string Name, string ActorType, IReadOnlyList<string> Scopes);
 }

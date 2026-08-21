@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.OpenApi;
 using ObsidianBot.Api;
 using ObsidianBot.Configuration;
 using ObsidianBot.Services;
@@ -7,43 +8,121 @@ using Telegram.Bot;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddSingleton(ObsidianBotOptions.Load(builder.Configuration));
-builder.Services.AddSingleton<ITelegramBotClient>(serviceProvider =>
+var botOptions = ObsidianBotOptions.Load(builder.Configuration);
+builder.Services.AddSingleton(botOptions);
+if (botOptions.RunsTelegram)
 {
-    var options = serviceProvider.GetRequiredService<ObsidianBotOptions>();
-    return new TelegramBotClient(options.TelegramBotToken);
-});
+    builder.Services.AddSingleton<ITelegramBotClient>(serviceProvider =>
+    {
+        var options = serviceProvider.GetRequiredService<ObsidianBotOptions>();
+        return new TelegramBotClient(options.TelegramBotToken);
+    });
+}
+
 builder.Services.AddSingleton(new HttpClient { Timeout = TimeSpan.FromSeconds(60) });
 builder.Services.AddSingleton<OpenAiEmbeddingClient>();
-builder.Services.AddSingleton<ObsidianVaultWriter>();
+builder.Services.AddSingleton<VaultAccessPolicy>();
 builder.Services.AddSingleton<VaultSearchService>();
-builder.Services.AddHostedService<VaultSearchIndexer>();
-builder.Services.AddHostedService<ObsidianBotService>();
+builder.Services.AddSingleton<VaultNotesService>();
+builder.Services.AddSingleton<ProposalStore>();
+builder.Services.AddSingleton<ChangeProposalService>();
+if (botOptions.RunsTelegram)
+{
+    builder.Services.AddSingleton<ObsidianVaultWriter>();
+    builder.Services.AddHostedService<ObsidianBotService>();
+}
+
+if (botOptions.RunsSearchIndexer)
+{
+    builder.Services.AddHostedService<VaultSearchIndexer>();
+}
+
+if (botOptions.RunsPublisher)
+{
+    builder.Services.AddHostedService<ProposalPublisher>();
+}
+
 builder.Services
     .AddAuthentication()
     .AddScheme<AuthenticationSchemeOptions, ApiTokenAuthenticationHandler>(
         ApiTokenAuthenticationHandler.SchemeName,
         _ => { });
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(ApiAuthorization.Configure);
+builder.Services.AddOpenApi("v1", options =>
+{
+    options.ShouldInclude = description => description.GroupName == "v1";
+    options.AddDocumentTransformer((document, _, _) =>
+    {
+        document.Info = new()
+        {
+            Title = "Obsidian Agent Capture API",
+            Version = "v0.1",
+            Description = "Review-first API for agents to read approved vault content and create immutable change proposals. " +
+                          "Use OBSIDIAN_AGENT_API_TOKEN for note access and proposal creation. " +
+                          "Use OBSIDIAN_REVIEW_API_TOKEN only for human review, publication status, and audit events."
+        };
+        document.Components ??= new OpenApiComponents();
+        document.Components.SecuritySchemes = new Dictionary<string, IOpenApiSecurityScheme>
+        {
+            ["bearerAuth"] = new OpenApiSecurityScheme
+            {
+                Type = SecuritySchemeType.Http,
+                Scheme = "bearer",
+                In = ParameterLocation.Header,
+                BearerFormat = "API token",
+                Description = "Send `Authorization: Bearer <token>`. Agent tokens may read notes and create/read proposals; " +
+                              "reviewer tokens may review proposals and read audit events."
+            }
+        };
+
+        foreach (var operation in document.Paths.Values.SelectMany(path => path.Operations ?? []))
+        {
+            operation.Value.Security ??= [];
+            operation.Value.Security.Add(new OpenApiSecurityRequirement
+            {
+                [new OpenApiSecuritySchemeReference("bearerAuth", document)] = []
+            });
+            operation.Value.Responses ??= new OpenApiResponses();
+            operation.Value.Responses.TryAdd("401", new OpenApiResponse
+            {
+                Description = "Missing or invalid bearer token."
+            });
+            operation.Value.Responses.TryAdd("403", new OpenApiResponse
+            {
+                Description = "The bearer token does not have the scope required by this operation."
+            });
+        }
+
+        return Task.CompletedTask;
+    });
+});
 
 var app = builder.Build();
 
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 
-if (string.IsNullOrWhiteSpace(app.Services.GetRequiredService<ObsidianBotOptions>().ApiToken))
+if (botOptions.RunsAgentApi)
 {
-    app.Logger.LogWarning("OBSIDIAN_API_TOKEN is not configured; all API requests will be rejected.");
-}
+    if (string.IsNullOrWhiteSpace(botOptions.AgentApiToken))
+    {
+        app.Logger.LogWarning("OBSIDIAN_AGENT_API_TOKEN is not configured; the agent API will reject requests.");
+    }
 
-var api = app.MapGroup("/api").RequireAuthorization(new AuthorizeAttribute
-{
-    AuthenticationSchemes = ApiTokenAuthenticationHandler.SchemeName
-});
-api.MapGet("/", () => Results.Ok(new
-{
-    commands = new[] { "add", "search", "semantic", "cancel" }
-}));
-api.MapPost("/commands/cancel", () => Results.Ok(new ApiCancelResponse("cancelled")));
-api.MapPost("/commands/{command}", ApiCommandEndpoints.ExecuteAsync);
+    if (string.IsNullOrWhiteSpace(botOptions.ReviewApiToken))
+    {
+        app.Logger.LogWarning("OBSIDIAN_REVIEW_API_TOKEN is not configured; proposal reviews will be unavailable.");
+    }
+
+    app.MapOpenApi("/openapi/{documentName}.json").AllowAnonymous();
+
+    var agentApi = app.MapGroup("/v1")
+        .WithGroupName("v1")
+        .WithTags("Agent capture")
+        .RequireAuthorization(new AuthorizeAttribute
+    {
+        AuthenticationSchemes = ApiTokenAuthenticationHandler.SchemeName
+    });
+    AgentApiEndpoints.Map(agentApi);
+}
 
 await app.RunAsync();

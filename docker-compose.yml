@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
+      - OBSIDIAN_COMPONENT_ROLE=telegram
       - TELEGRAM_BOT_TOKEN=${OBSIDIAN_BOT_TOKEN}
       - TELEGRAM_ALLOWED_USER_ID=${TELEGRAM_ALLOWED_USER_ID}
       - BUTLER_TIMEZONE=${BUTLER_TIMEZONE:-UTC}
@@ -11,10 +12,9 @@ services:
       - OBSIDIAN_DAILY_NOTES_PATTERN=${OBSIDIAN_DAILY_NOTES_PATTERN:-04 archive/journal/daily journal/*.md}
       - OBSIDIAN_INBOX_NOTE_PATH=${OBSIDIAN_INBOX_NOTE_PATH:-_inbox/_inbox.md}
       - OBSIDIAN_MEDIA_FOLDER_PATH=${OBSIDIAN_MEDIA_FOLDER_PATH:-_inbox}
-      - OBSIDIAN_SEARCH_DATABASE_PATH=${OBSIDIAN_SEARCH_DATABASE_PATH:-.obsidian-bot/search.db}
+      - OBSIDIAN_SEARCH_DATABASE_PATH=/var/lib/obsidian-bot/telegram-search.db
       - OBSIDIAN_SEARCH_RESULT_LIMIT=${OBSIDIAN_SEARCH_RESULT_LIMIT:-5}
       - OBSIDIAN_SEARCH_RECONCILE_INTERVAL_SECONDS=${OBSIDIAN_SEARCH_RECONCILE_INTERVAL_SECONDS:-60}
-      - OBSIDIAN_API_TOKEN=${OBSIDIAN_API_TOKEN:-}
       - ASPNETCORE_URLS=http://+:8080
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_EMBEDDINGS_URL=${OPENAI_EMBEDDINGS_URL:-https://api.openai.com/v1/embeddings}
@@ -22,8 +22,7 @@ services:
       - OPENAI_EMBEDDING_DIMENSIONS=${OPENAI_EMBEDDING_DIMENSIONS:-1536}
     volumes:
       - /var/obsidian:/var/notes
-    ports:
-      - "${OBSIDIAN_API_BIND_ADDRESS:-127.0.0.1}:${OBSIDIAN_API_PORT:-8080}:8080"
+      - obsidian-bot-data:/var/lib/obsidian-bot
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "grep -q ObsidianBot.dll /proc/1/cmdline"]
@@ -37,3 +36,67 @@ services:
       - homepage.name=Obsidian Bot
       - homepage.icon=sh-pandoc-light.png
       - homepage.href=https://coolify.dartungar.com/project/ycsgggs0kssowcwgskww4cg8/environment/kk4sgs8wsgk44gc80c8soggk/application/r7bsa9osr3p7pwucxhe9oi7w
+
+  obsidian-agent-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - OBSIDIAN_COMPONENT_ROLE=agent-api
+      - OBSIDIAN_VAULT_PATH=/var/notes
+      - OBSIDIAN_SEARCH_DATABASE_PATH=/var/lib/obsidian-bot/agent-search.db
+      - OBSIDIAN_PROPOSAL_DATABASE_PATH=/var/lib/obsidian-bot/proposals.db
+      - OBSIDIAN_PROPOSAL_SNAPSHOT_DIRECTORY=/var/lib/obsidian-bot/snapshots
+      - OBSIDIAN_AGENT_API_TOKEN=${OBSIDIAN_AGENT_API_TOKEN:-}
+      - OBSIDIAN_REVIEW_API_TOKEN=${OBSIDIAN_REVIEW_API_TOKEN:-}
+      - OBSIDIAN_AGENT_READABLE_FOLDERS=${OBSIDIAN_AGENT_READABLE_FOLDERS:-}
+      - OBSIDIAN_AGENT_WRITABLE_FOLDERS=${OBSIDIAN_AGENT_WRITABLE_FOLDERS:-_inbox}
+      - OBSIDIAN_AGENT_DENIED_FOLDERS=${OBSIDIAN_AGENT_DENIED_FOLDERS:-.obsidian,.git,attachments,templates,archive}
+      - OBSIDIAN_PROPOSAL_TTL_HOURS=${OBSIDIAN_PROPOSAL_TTL_HOURS:-24}
+      - OBSIDIAN_PROPOSAL_MAX_MARKDOWN_LENGTH=${OBSIDIAN_PROPOSAL_MAX_MARKDOWN_LENGTH:-20000}
+      - ASPNETCORE_URLS=http://+:8080
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_EMBEDDINGS_URL=${OPENAI_EMBEDDINGS_URL:-https://api.openai.com/v1/embeddings}
+      - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      - OPENAI_EMBEDDING_DIMENSIONS=${OPENAI_EMBEDDING_DIMENSIONS:-1536}
+    volumes:
+      - /var/obsidian:/var/notes:ro
+      - obsidian-bot-data:/var/lib/obsidian-bot
+    ports:
+      - "${OBSIDIAN_API_BIND_ADDRESS:-127.0.0.1}:${OBSIDIAN_API_PORT:-8080}:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q ObsidianBot.dll /proc/1/cmdline"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    network_mode: bridge
+
+  obsidian-publisher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - OBSIDIAN_COMPONENT_ROLE=publisher
+      - OBSIDIAN_VAULT_PATH=/var/notes
+      - OBSIDIAN_PROPOSAL_DATABASE_PATH=/var/lib/obsidian-bot/proposals.db
+      - OBSIDIAN_PROPOSAL_SNAPSHOT_DIRECTORY=/var/lib/obsidian-bot/snapshots
+      - OBSIDIAN_AGENT_WRITABLE_FOLDERS=${OBSIDIAN_AGENT_WRITABLE_FOLDERS:-_inbox}
+      - OBSIDIAN_AGENT_DENIED_FOLDERS=${OBSIDIAN_AGENT_DENIED_FOLDERS:-.obsidian,.git,attachments,templates,archive}
+      - OBSIDIAN_PUBLISHER_POLL_INTERVAL_SECONDS=${OBSIDIAN_PUBLISHER_POLL_INTERVAL_SECONDS:-2}
+      - ASPNETCORE_URLS=http://+:8080
+    volumes:
+      - /var/obsidian:/var/notes
+      - obsidian-bot-data:/var/lib/obsidian-bot
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q ObsidianBot.dll /proc/1/cmdline"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    network_mode: bridge
+
+volumes:
+  obsidian-bot-data:

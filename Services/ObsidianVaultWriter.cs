@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
 using ObsidianBot.Configuration;
@@ -8,8 +7,6 @@ namespace ObsidianBot.Services;
 
 public sealed class ObsidianVaultWriter
 {
-    private static readonly ConcurrentDictionary<string, SemaphoreSlim> FileLocks = new(StringComparer.Ordinal);
-
     private readonly ObsidianBotOptions _options;
 
     public ObsidianVaultWriter(ObsidianBotOptions options)
@@ -92,15 +89,9 @@ public sealed class ObsidianVaultWriter
             entry = $"***\n{entry}";
         }
 
-        var fileLock = FileLocks.GetOrAdd(notePath, static _ => new SemaphoreSlim(1, 1));
-        await fileLock.WaitAsync(ct);
-        try
+        await using (await VaultWriteLock.AcquireAsync(notePath, ct))
         {
             await AppendToFileAsync(notePath, entry, ct);
-        }
-        finally
-        {
-            fileLock.Release();
         }
 
         return new SaveResult(target, ToVaultRelativePath(notePath), mediaRelativePath);
@@ -116,15 +107,9 @@ public sealed class ObsidianVaultWriter
         Directory.CreateDirectory(Path.GetDirectoryName(notePath) ?? _options.VaultPath);
 
         var entry = FormatTaskLine(taskText);
-        var fileLock = FileLocks.GetOrAdd(notePath, static _ => new SemaphoreSlim(1, 1));
-        await fileLock.WaitAsync(ct);
-        try
+        await using (await VaultWriteLock.AcquireAsync(notePath, ct))
         {
             await AppendToFileAsync(notePath, entry, ct);
-        }
-        finally
-        {
-            fileLock.Release();
         }
 
         return new SaveResult(target, ToVaultRelativePath(notePath), null);
@@ -140,9 +125,7 @@ public sealed class ObsidianVaultWriter
         Directory.CreateDirectory(Path.GetDirectoryName(notePath) ?? _options.VaultPath);
 
         var taskLine = FormatTaskLine(taskText);
-        var fileLock = FileLocks.GetOrAdd(notePath, static _ => new SemaphoreSlim(1, 1));
-        await fileLock.WaitAsync(ct);
-        try
+        await using (await VaultWriteLock.AcquireAsync(notePath, ct))
         {
             var existingContent = File.Exists(notePath)
                 ? await File.ReadAllTextAsync(notePath, ct)
@@ -150,10 +133,6 @@ public sealed class ObsidianVaultWriter
 
             var updatedContent = InsertTaskIntoDailyNote(existingContent, taskLine);
             await File.WriteAllTextAsync(notePath, updatedContent, new UTF8Encoding(false), ct);
-        }
-        finally
-        {
-            fileLock.Release();
         }
 
         return new SaveResult(target, ToVaultRelativePath(notePath), null);

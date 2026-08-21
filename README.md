@@ -30,44 +30,78 @@ OBSIDIAN_SEARCH_RECONCILE_INTERVAL_SECONDS=60
 
 Changing the embedding model or dimension count clears only stored vectors; they are regenerated on the next semantic search.
 
-## API
+## Agent capture API
 
-The HTTP API is protected by a bearer token. Set a strong value before exposing the
-container:
+`/v1` implements the review-first capture loop in [agent-capture.md](agent-capture.md):
+an agent may search, read, and create immutable proposals; a separate reviewer
+credential approves an exact server-generated preview; an internal publisher is
+the only component that writes to the vault.
+
+The machine-readable contract is publicly available at
+`GET /openapi/v1.json`. It contains every `/v1` route, request and response
+schema, bearer-token setup, and operation descriptions; no token is included in
+the document. Agents should retrieve it before their first API call.
+
+Configure distinct strong tokens and explicit writable folders:
 
 ```env
-OBSIDIAN_API_TOKEN=...
-OBSIDIAN_API_PORT=8080
+OBSIDIAN_AGENT_API_TOKEN=...
+OBSIDIAN_REVIEW_API_TOKEN=...
+OBSIDIAN_AGENT_WRITABLE_FOLDERS=_inbox,01 projects
+# Optional: limit agent reads too. An empty value permits all non-denied folders.
+OBSIDIAN_AGENT_READABLE_FOLDERS=01 projects,_inbox
 ```
 
-With Docker Compose, the API listens on `http://localhost:8080` by default. Every
-`/api` endpoint requires `Authorization: Bearer <OBSIDIAN_API_TOKEN>`; `/healthz`
-is intentionally unauthenticated for container health checks. The default Docker
-binding is loopback-only. To expose it through a TLS-terminating reverse proxy,
-set `OBSIDIAN_API_BIND_ADDRESS=0.0.0.0`; do not expose the bearer token over plain
-HTTP on an untrusted network.
+The Compose deployment runs three roles from the same image:
 
-The API exposes the same commands as Telegram at `POST /api/commands/{command}`:
+- `obsidian-agent-api` exposes `/v1` and receives `/var/notes` read-only.
+- `obsidian-publisher` has the read/write vault mount, no host port, and applies
+  only approved proposals.
+- `obsidian-bot` retains the Telegram workflow but has no host-published API port
+  in the supplied Compose file.
 
-- `add` saves text. Its JSON body requires `content` and `destination`. Capture
-  destinations are `today`, `yesterday`, `inbox`, or `date` (with `date` as
-  `YYYY-MM-DD`). Set `asTask` to `true` to create a task; task destinations are
-  `today`, `tomorrow`, and `inbox`.
-- `search` accepts `query` and returns the combined full-text and semantic results.
-- `semantic` accepts `query` and returns semantic results only.
-- `cancel` is accepted for command parity and returns success. API calls are
-  stateless, so there is no pending server-side capture to clear.
+The proposal database and reversible JSON snapshots live in the shared
+`obsidian-bot-data` volume, outside the vault. The API refuses to expose
+`.obsidian`, attachments, templates, archive folders, and configured denied paths.
+New-note and append destinations must be in `OBSIDIAN_AGENT_WRITABLE_FOLDERS`;
+the conservative default is `_inbox` only.
 
-For example:
+Agent-token scopes are `notes:read`, `proposals:create`, and `proposals:read`.
+Reviewer tokens have `proposals:review`, `proposals:read`, and `audit:read`.
+The agent token cannot call the review endpoint or publish a change.
+
+Typical existing-note flow:
 
 ```bash
-curl --request POST http://localhost:8080/api/commands/add \
-  --header "Authorization: Bearer $OBSIDIAN_API_TOKEN" \
-  --header "Content-Type: application/json" \
-  --data '{"content":"Plan the release","destination":"today"}'
+# 1. Search, then retrieve the candidate's headings/section.
+curl --get http://localhost:8080/v1/notes \
+  --header "Authorization: Bearer $OBSIDIAN_AGENT_API_TOKEN" \
+  --data-urlencode 'q=checkout routing' \
+  --data-urlencode 'mode=hybrid' \
+  --data-urlencode 'include=headings,snippet'
 
-curl --request POST http://localhost:8080/api/commands/search \
-  --header "Authorization: Bearer $OBSIDIAN_API_TOKEN" \
-  --header "Content-Type: application/json" \
-  --data '{"query":"release plan"}'
+# 2. Create an immutable, server-previewed append proposal.
+curl --request POST http://localhost:8080/v1/change-proposals \
+  --header "Authorization: Bearer $OBSIDIAN_AGENT_API_TOKEN" \
+  --header 'Idempotency-Key: 7825a1b1-...' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "type":"append_section",
+    "target":{"noteId":"note_...","baseRevision":"sha256:...","sectionId":"section_..."},
+    "contentMarkdown":"- 2026-08-19 — Decision text.",
+    "rationale":"This belongs in the project Decisions section."
+  }'
+
+# 3. A human approves precisely the returned preview hash.
+curl --request POST http://localhost:8080/v1/change-proposals/proposal_.../reviews \
+  --header "Authorization: Bearer $OBSIDIAN_REVIEW_API_TOKEN" \
+  --header 'Content-Type: application/json' \
+  --data '{"decision":"approved","approvedPreviewHash":"sha256:..."}'
 ```
+
+The publisher re-reads the note and its opaque section, checks the original
+revision, creates a snapshot, and writes atomically. Any intervening change
+transitions the proposal to `conflicted`; it is never rebased or overwritten.
+Use `GET /v1/change-proposals/{proposal_id}/publication` to observe the outcome
+and `GET /v1/audit-events?proposal_id={proposal_id}` with the reviewer token to
+inspect its audit trail.

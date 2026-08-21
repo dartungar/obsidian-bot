@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 namespace ObsidianBot.Configuration;
 
 public sealed record ObsidianBotOptions(
+    string ComponentRole,
     string TelegramBotToken,
     long AllowedUserId,
     string VaultPath,
@@ -16,37 +17,77 @@ public sealed record ObsidianBotOptions(
     int EmbeddingDimensions,
     int SearchResultLimit,
     int SearchReconcileIntervalSeconds,
-    string ApiToken,
+    string AgentApiToken,
+    string ReviewApiToken,
+    string ProposalDatabasePath,
+    string ProposalSnapshotDirectory,
+    IReadOnlyList<string> AgentReadableFolders,
+    IReadOnlyList<string> AgentWritableFolders,
+    IReadOnlyList<string> AgentDeniedFolders,
+    TimeSpan ProposalTtl,
+    int ProposalMaxMarkdownLength,
+    int PublisherPollIntervalSeconds,
     TimeZoneInfo TimeZone)
 {
+    public bool RunsTelegram => ComponentRole is "combined" or "telegram";
+
+    public bool RunsAgentApi => ComponentRole is "combined" or "agent-api";
+
+    public bool RunsSearchIndexer => RunsTelegram || RunsAgentApi;
+
+    public bool RunsPublisher => ComponentRole == "publisher" ||
+                                 (ComponentRole == "combined" && PublisherEnabled);
+
+    public bool PublisherEnabled { get; init; }
+
     public static ObsidianBotOptions Load(IConfiguration configuration)
     {
-        var token = configuration["TELEGRAM_BOT_TOKEN"];
-        if (string.IsNullOrWhiteSpace(token))
+        var componentRole = (configuration["OBSIDIAN_COMPONENT_ROLE"] ?? "combined").Trim().ToLowerInvariant();
+        if (componentRole is not ("combined" or "telegram" or "agent-api" or "publisher"))
         {
-            throw new InvalidOperationException("TELEGRAM_BOT_TOKEN is required.");
+            throw new InvalidOperationException(
+                "OBSIDIAN_COMPONENT_ROLE must be one of: combined, telegram, agent-api, publisher.");
         }
 
+        var token = configuration["TELEGRAM_BOT_TOKEN"] ?? string.Empty;
         var userIdRaw = configuration["TELEGRAM_ALLOWED_USER_ID"];
-        if (string.IsNullOrWhiteSpace(userIdRaw) || !long.TryParse(userIdRaw, out var allowedUserId))
+        var allowedUserId = 0L;
+        if (componentRole is "combined" or "telegram")
         {
-            throw new InvalidOperationException("TELEGRAM_ALLOWED_USER_ID is required and must be numeric.");
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                throw new InvalidOperationException("TELEGRAM_BOT_TOKEN is required when Telegram is enabled.");
+            }
+
+            if (string.IsNullOrWhiteSpace(userIdRaw) || !long.TryParse(userIdRaw, out allowedUserId))
+            {
+                throw new InvalidOperationException("TELEGRAM_ALLOWED_USER_ID is required and must be numeric when Telegram is enabled.");
+            }
         }
 
         var timeZoneId = configuration["BUTLER_TIMEZONE"] ?? "UTC";
 
         var vaultPath = Path.GetFullPath(configuration["OBSIDIAN_VAULT_PATH"] ?? "/var/notes");
 
+        var searchDatabasePath = ResolveStoragePath(
+            vaultPath,
+            configuration["OBSIDIAN_SEARCH_DATABASE_PATH"] ?? ".obsidian-bot/search.db");
+        var proposalDatabasePath = ResolveStoragePath(
+            vaultPath,
+            configuration["OBSIDIAN_PROPOSAL_DATABASE_PATH"] ?? ".obsidian-bot/proposals.db");
+        var proposalSnapshotDirectory = ResolveStoragePath(
+            vaultPath,
+            configuration["OBSIDIAN_PROPOSAL_SNAPSHOT_DIRECTORY"] ?? ".obsidian-bot/snapshots");
+
         return new ObsidianBotOptions(
+            ComponentRole: componentRole,
             TelegramBotToken: token,
             AllowedUserId: allowedUserId,
             VaultPath: vaultPath,
             DailyNotesPattern: configuration["OBSIDIAN_DAILY_NOTES_PATTERN"] ?? "04 archive/journal/daily journal/*.md",
             InboxNotePath: configuration["OBSIDIAN_INBOX_NOTE_PATH"] ?? "_inbox/_inbox.md",
             MediaFolderPath: configuration["OBSIDIAN_MEDIA_FOLDER_PATH"] ?? "_inbox",
-            SearchDatabasePath: ResolveVaultPath(
-                vaultPath,
-                configuration["OBSIDIAN_SEARCH_DATABASE_PATH"] ?? ".obsidian-bot/search.db"),
+            SearchDatabasePath: searchDatabasePath,
             EmbeddingsApiKey: configuration["OPENAI_API_KEY"] ?? string.Empty,
             EmbeddingsApiUrl: ParseUri(
                 configuration["OPENAI_EMBEDDINGS_URL"],
@@ -57,23 +98,44 @@ public sealed record ObsidianBotOptions(
             SearchReconcileIntervalSeconds: ParsePositiveInt(
                 configuration["OBSIDIAN_SEARCH_RECONCILE_INTERVAL_SECONDS"],
                 60),
-            ApiToken: configuration["OBSIDIAN_API_TOKEN"] ?? string.Empty,
-            TimeZone: ResolveTimeZone(timeZoneId));
+            AgentApiToken: configuration["OBSIDIAN_AGENT_API_TOKEN"] ?? string.Empty,
+            ReviewApiToken: configuration["OBSIDIAN_REVIEW_API_TOKEN"] ?? string.Empty,
+            ProposalDatabasePath: proposalDatabasePath,
+            ProposalSnapshotDirectory: proposalSnapshotDirectory,
+            AgentReadableFolders: ParsePathList(configuration["OBSIDIAN_AGENT_READABLE_FOLDERS"]),
+            AgentWritableFolders: ParsePathList(configuration["OBSIDIAN_AGENT_WRITABLE_FOLDERS"], "_inbox"),
+            AgentDeniedFolders: ParsePathList(
+                configuration["OBSIDIAN_AGENT_DENIED_FOLDERS"],
+                ".obsidian,.git,attachments,templates,archive"),
+            ProposalTtl: TimeSpan.FromHours(ParsePositiveInt(configuration["OBSIDIAN_PROPOSAL_TTL_HOURS"], 24)),
+            ProposalMaxMarkdownLength: ParsePositiveInt(configuration["OBSIDIAN_PROPOSAL_MAX_MARKDOWN_LENGTH"], 20_000),
+            PublisherPollIntervalSeconds: ParsePositiveInt(
+                configuration["OBSIDIAN_PUBLISHER_POLL_INTERVAL_SECONDS"],
+                2),
+            TimeZone: ResolveTimeZone(timeZoneId))
+        {
+            PublisherEnabled = ParseBoolean(configuration["OBSIDIAN_PUBLISHER_ENABLED"])
+        };
     }
 
-    private static string ResolveVaultPath(string vaultPath, string configuredPath)
+    private static string ResolveStoragePath(string vaultPath, string configuredPath)
     {
         var combined = Path.IsPathRooted(configuredPath)
             ? configuredPath
             : Path.Combine(vaultPath, configuredPath.Replace('/', Path.DirectorySeparatorChar));
         var fullPath = Path.GetFullPath(combined);
 
-        if (!fullPath.StartsWith(vaultPath + Path.DirectorySeparatorChar, StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException("Search database path must stay inside the vault.");
-        }
-
         return fullPath;
+    }
+
+    private static IReadOnlyList<string> ParsePathList(string? value, string fallback = "")
+    {
+        return (value ?? fallback)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(path => path.Replace('\\', '/').Trim('/'))
+            .Where(path => !string.IsNullOrWhiteSpace(path) && path is not "." and not "..")
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     private static Uri ParseUri(string? value, string fallback)
@@ -90,6 +152,9 @@ public sealed record ObsidianBotOptions(
     {
         return int.TryParse(value, out var parsed) && parsed > 0 ? parsed : fallback;
     }
+
+    private static bool ParseBoolean(string? value) =>
+        bool.TryParse(value, out var parsed) && parsed;
 
     private static TimeZoneInfo ResolveTimeZone(string id)
     {

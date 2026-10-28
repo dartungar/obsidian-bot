@@ -17,6 +17,7 @@ public sealed class ObsidianBotService : BackgroundService
     private readonly ITelegramBotClient _bot;
     private readonly ObsidianVaultWriter _vaultWriter;
     private readonly VaultSearchService _vaultSearch;
+    private readonly VaultSyncStateStore _syncState;
     private readonly ConcurrentDictionary<long, PendingCapture> _pendingByChat = new();
     private readonly ConcurrentDictionary<long, DateTimeOffset> _awaitingDateByChat = new();
 
@@ -27,13 +28,15 @@ public sealed class ObsidianBotService : BackgroundService
         ObsidianBotOptions options,
         ITelegramBotClient bot,
         ObsidianVaultWriter vaultWriter,
-        VaultSearchService vaultSearch)
+        VaultSearchService vaultSearch,
+        VaultSyncStateStore syncState)
     {
         _logger = logger;
         _options = options;
         _bot = bot;
         _vaultWriter = vaultWriter;
         _vaultSearch = vaultSearch;
+        _syncState = syncState;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -187,6 +190,12 @@ public sealed class ObsidianBotService : BackgroundService
 
     private async Task HandleTextMessageAsync(long chatId, string text, CancellationToken ct)
     {
+        if (TryGetCommandArgument(text, "/syncstatus", out _))
+        {
+            await _bot.SendTextMessageAsync(chatId, _syncState.Read().ToTelegramText(), cancellationToken: ct);
+            return;
+        }
+
         if (text.StartsWith("/cancel", StringComparison.OrdinalIgnoreCase))
         {
             ClearPendingState(chatId);
@@ -242,6 +251,11 @@ public sealed class ObsidianBotService : BackgroundService
 
     private async Task HandleSearchAsync(long chatId, string query, bool semantic, CancellationToken ct)
     {
+        if (!_syncState.IsReady)
+        {
+            await _bot.SendTextMessageAsync(chatId, "The vault is waiting for its initial sync. Check /syncstatus.", cancellationToken: ct);
+            return;
+        }
         if (string.IsNullOrWhiteSpace(query))
         {
             var command = semantic ? "/semantic" : "/search";

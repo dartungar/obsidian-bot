@@ -66,6 +66,7 @@ public sealed class ApiTokenAuthenticationHandler : AuthenticationHandler<Authen
                 "agent",
                 [
                     "notes:read",
+                    "sync:read",
                     "notes:create",
                     "notes:append-section",
                     "notes:append-task",
@@ -78,7 +79,7 @@ public sealed class ApiTokenAuthenticationHandler : AuthenticationHandler<Authen
                 _botOptions.ReviewApiToken,
                 "reviewer",
                 "human",
-                ["proposals:read", "proposals:review", "audit:read"])
+                ["proposals:read", "proposals:review", "audit:read", "sync:read"])
         };
 
         var supplied = Encoding.UTF8.GetBytes(suppliedToken);

@@ -12,17 +12,20 @@ public sealed class ProposalPublisher : BackgroundService
     private readonly ObsidianBotOptions _options;
     private readonly ProposalStore _store;
     private readonly VaultNotesService _notes;
+    private readonly VaultSyncStateStore _syncState;
 
     public ProposalPublisher(
         ILogger<ProposalPublisher> logger,
         ObsidianBotOptions options,
         ProposalStore store,
-        VaultNotesService notes)
+        VaultNotesService notes,
+        VaultSyncStateStore syncState)
     {
         _logger = logger;
         _options = options;
         _store = store;
         _notes = notes;
+        _syncState = syncState;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -31,6 +34,7 @@ public sealed class ProposalPublisher : BackgroundService
         {
             try
             {
+                await _syncState.WaitUntilReadyAsync(stoppingToken);
                 var proposal = await _store.ClaimApprovedAsync(stoppingToken);
                 if (proposal is null)
                 {

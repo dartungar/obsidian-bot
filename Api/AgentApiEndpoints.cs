@@ -13,11 +13,16 @@ public static class AgentApiEndpoints
         api.MapGet("/", () => Results.Ok(new AgentApiDiscoveryResponse(
             "v0.2",
             "/openapi/v1.json",
-            ["capabilities", "notes", "note-changes", "changes", "change-proposals", "audit-events"])))
+            ["capabilities", "notes", "note-changes", "changes", "change-proposals", "audit-events", "sync/status"])))
             .WithSummary("Discover agent API resources")
             .WithDescription("Use the public OpenAPI document at `/openapi/v1.json` to discover the full contract.")
             .Produces<AgentApiDiscoveryResponse>(StatusCodes.Status200OK)
             .RequireAuthorization(ApiAuthorization.AgentReadPolicy);
+
+        api.MapGet("/sync/status", (VaultSyncStateStore store) => Results.Ok(store.Read()))
+            .WithSummary("Get managed vault sync status")
+            .Produces<VaultSyncStatus>(StatusCodes.Status200OK)
+            .RequireAuthorization(ApiAuthorization.SyncReadPolicy);
 
         api.MapGet("/capabilities", (DirectChangeService changes) => Results.Ok(changes.GetCapabilities()))
             .WithSummary("Get current direct-edit capabilities")

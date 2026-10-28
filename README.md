@@ -2,6 +2,150 @@
 
 Telegram bot for capturing notes, tasks, voice notes, and images into an Obsidian vault.
 
+## Managed Obsidian Sync
+
+The app can initialize a local vault, link it to Obsidian Sync, and supervise
+timed sync rounds. The Linux Compose deployment adds an `obsidian-sync` service
+with the official `obsidian-headless` client pinned to **0.0.14**. Existing
+deployments keep their current behavior until `OBSIDIAN_SYNC_ENABLED=true`.
+An active Obsidian Sync subscription is required.
+
+### Setup
+
+1. Copy `.env.example` to `.env` and fill in the Telegram/API settings. Set
+   `OBSIDIAN_SYNC_VAULT` to the remote vault ID (preferred) or a unique name.
+2. Supply `OBSIDIAN_AUTH_TOKEN`, or perform the one-time interactive login below.
+   Supply `OBSIDIAN_SYNC_PASSWORD` for the remote vault's end-to-end encryption
+   password. Account login and vault encryption use different credentials.
+3. Stop any other sync client operating on the server's `/var/obsidian` directory.
+   Desktop/mobile clients on other devices continue syncing normally.
+4. For an existing, nonempty `/var/obsidian`, set
+   `OBSIDIAN_SYNC_ADOPT_EXISTING=true`. Before its first managed sync, the app
+   creates an `initial-vault-backup-*.zip` in the shared sync state directory.
+   Symbolic links are refused during adoption. The backup does not expire
+   automatically; retain it until migration is verified.
+5. Start the services with `docker compose up -d --build`.
+
+If supplying a token is inconvenient, log in once, including MFA when prompted:
+
+```bash
+docker compose build obsidian-sync
+docker compose run --rm --no-deps --entrypoint ob obsidian-sync login
+docker compose up -d --build
+```
+
+Login credentials and headless sync metadata persist in the private
+`obsidian-headless-data` volume. They are mounted only into `obsidian-sync`.
+Only the sync service receives the Obsidian authentication token and encryption
+password. The derived encryption key persists after setup, so the password is
+not required for subsequent rounds using that configuration. Keep both
+persistent volumes and the vault together when backing up or migrating.
+
+To create a remote vault automatically, set `OBSIDIAN_SYNC_CREATE_REMOTE=true`
+and use its desired **name** as `OBSIDIAN_SYNC_VAULT`. Creation uses end-to-end
+encryption and requires the encryption password. Existing matching vaults are
+reused; ambiguous names are refused. Creation is never attempted after a saved
+remote identity disappears.
+
+For container secrets, set `OBSIDIAN_AUTH_TOKEN_FILE` and/or
+`OBSIDIAN_SYNC_PASSWORD_FILE` to mounted secret paths. File values override
+environment values and are read again when commands run. These paths must be
+mounted into the sync container, for example with a Compose override:
+
+```yaml
+services:
+  obsidian-sync:
+    secrets:
+      - obsidian-auth-token
+      - obsidian-sync-password
+    environment:
+      OBSIDIAN_AUTH_TOKEN_FILE: /run/secrets/obsidian-auth-token
+      OBSIDIAN_SYNC_PASSWORD_FILE: /run/secrets/obsidian-sync-password
+secrets:
+  obsidian-auth-token:
+    file: /private/obsidian-auth-token
+  obsidian-sync-password:
+    file: /private/obsidian-sync-password
+```
+
+### Runtime behavior
+
+- A round runs **25 seconds after the previous round finishes**. There is no
+  overlap. Failed rounds back off exponentially; credential/setup failures retry
+  more slowly so an unattended service does not hammer authentication.
+- Normal rounds time out after 180 seconds; initial setup/download has a
+  1,800-second allowance. A timeout or application shutdown kills the child
+  process tree. Success requires exit code zero, an exact `Fully synced` event,
+  and no reported stderr errors. Raw client output and secret-bearing arguments
+  are never written into application logs or status responses.
+- Sync is bidirectional. Conflicting edits use the client's `conflict` strategy
+  to preserve conflicting copies. Image, audio, video, and PDF attachments sync;
+  Obsidian application/plugin configuration and unsupported file types do not.
+  `.obsidian-bot` and `.git` are excluded.
+- Bot/API writes and sync rounds share a cross-process vault lock. Writes wait
+  while a round runs, so a large round can delay a capture. Per-file lock files
+  live outside the vault when managed sync is enabled.
+- Note reads, writes, publishing, and indexing wait until the initial sync
+  completes. Configured, permitted agent writable folders are created during
+  initialization so an empty remote vault can receive its first capture.
+  Once initialized, local captures remain available during network
+  outages. A saved local/remote identity prevents automatic relinking. A small,
+  excluded `.obsidian-bot/sync-instance` marker detects lost or replaced vault
+  volumes before retained sync metadata could propagate unintended deletions.
+- The search index watches downloaded Markdown changes and reconciles missed
+  filesystem events. Search databases and snapshots stay outside the vault.
+
+### Health and recovery
+
+- Telegram `/syncstatus` shows state, local availability, last successful sync,
+  and failure count. The allowed Telegram user receives one notification per
+  unhealthy incident and one on recovery. Incidents include three consecutive
+  failures, credentials/setup needing attention, or stale sync progress.
+- Authenticated `GET /v1/sync/status` exposes the same information plus attempt
+  times, duration, next retry, and error code. Both agent and reviewer tokens
+  have `sync:read`; credentials are never returned.
+- `/healthz` checks application liveness. `/readyz` returns 503 until the local
+  vault is initialized, then stays ready during temporary sync outages.
+  `/sync-healthz` returns 503 for an unhealthy or stale sync service. Anonymous
+  health endpoints expose only a coarse state. Docker uses `/sync-healthz` for
+  the sync service and liveness for the other services; failed sync rounds are
+  recovered by the supervisor rather than relying on Docker health restarts.
+- Successful rounds establish synchronization with the server. They do not
+  prove another device has downloaded a change; verify both directions with a
+  second client before migrating the real vault.
+
+| Setting | Default |
+| --- | --- |
+| `OBSIDIAN_SYNC_INTERVAL_SECONDS` | `25` |
+| `OBSIDIAN_SYNC_TIMEOUT_SECONDS` | `180` |
+| `OBSIDIAN_SYNC_INITIAL_TIMEOUT_SECONDS` | `1800` |
+| `OBSIDIAN_SYNC_STALE_AFTER_SECONDS` | `300` |
+| `OBSIDIAN_SYNC_MAX_BACKOFF_SECONDS` | `300` |
+| `OBSIDIAN_SYNC_ATTENTION_RETRY_SECONDS` | `900` |
+| `OBSIDIAN_SYNC_DEVICE_NAME` | `obsidian-bot` |
+| `OBSIDIAN_SYNC_REGION` | automatic; used only for remote creation |
+
+After authentication expires, replace the token secret or repeat the login
+command, then restart `obsidian-sync` to retry immediately. For an identity
+mismatch or missing vault marker, restore the matching vault and state volumes;
+do not clear headless metadata or relink automatically. For an intentional move
+to a different remote vault, stop the services and initialize a separate local
+vault with fresh sync state, then migrate notes explicitly.
+
+### Verification
+
+```bash
+dotnet build ObsidianBot.csproj
+python3 -m unittest discover -s tests -v
+docker compose config --quiet
+```
+
+The integration suite uses temporary vaults, real application processes and
+HTTP requests, and a fake headless executable. It covers initialization,
+adoption backups, remote creation, restart persistence, authentication and stale
+health, incomplete rounds, timeouts and child termination, owner exclusivity,
+and coordination with API writes. It never connects to Obsidian or Telegram.
+
 ## Search
 
 - `/search <query>` combines local full-text and semantic results in one response.

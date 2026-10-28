@@ -7,10 +7,27 @@ using ObsidianBot.Configuration;
 using ObsidianBot.Services;
 using Telegram.Bot;
 
+if (args is ["--health-check", var healthUrl])
+{
+    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+    try { Environment.ExitCode = (await http.GetAsync(healthUrl)).IsSuccessStatusCode ? 0 : 1; }
+    catch { Environment.ExitCode = 1; }
+    return;
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 var botOptions = ObsidianBotOptions.Load(builder.Configuration);
 builder.Services.AddSingleton(botOptions);
+var syncOptions = ObsidianSyncOptions.Load(builder.Configuration, botOptions);
+builder.Services.AddSingleton(syncOptions);
+builder.Services.AddSingleton<VaultSyncStateStore>();
+if (syncOptions.Enabled && (botOptions.ComponentRole is "sync" or "combined"))
+{
+    builder.Services.AddSingleton<SyncProcessClient>();
+    builder.Services.AddSingleton<VaultBootstrapService>();
+    builder.Services.AddHostedService<VaultSyncService>();
+}
 if (botOptions.RunsTelegram)
 {
     builder.Services.AddSingleton<ITelegramBotClient>(serviceProvider =>
@@ -34,6 +51,7 @@ if (botOptions.RunsTelegram)
 {
     builder.Services.AddSingleton<ObsidianVaultWriter>();
     builder.Services.AddHostedService<ObsidianBotService>();
+    if (syncOptions.Enabled) builder.Services.AddHostedService<SyncHealthNotificationService>();
 }
 
 if (botOptions.RunsSearchIndexer)
@@ -104,8 +122,20 @@ builder.Services.AddOpenApi("v1", options =>
 });
 
 var app = builder.Build();
+VaultWriteLock.Configure(syncOptions, app.Services.GetRequiredService<VaultSyncStateStore>());
 
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
+app.MapGet("/readyz", (VaultSyncStateStore store) => store.IsReady
+    ? Results.Ok(new { status = "ready" })
+    : Results.Json(new { status = "initializing" }, statusCode: StatusCodes.Status503ServiceUnavailable)).AllowAnonymous();
+app.MapGet("/sync-healthz", (VaultSyncStateStore store) =>
+{
+    var status = store.Read();
+    var healthy = !syncOptions.Enabled || status.Initialized && status.ConsecutiveFailures == 0 &&
+        (status.State is "healthy" or "syncing") && status.LastSuccessfulSyncAt is { } at &&
+        DateTimeOffset.UtcNow - at <= TimeSpan.FromSeconds(syncOptions.StaleAfterSeconds);
+    return Results.Json(new { status = healthy ? "healthy" : "unhealthy" }, statusCode: healthy ? 200 : 503);
+}).AllowAnonymous();
 
 if (botOptions.RunsAgentApi)
 {
@@ -127,6 +157,15 @@ if (botOptions.RunsAgentApi)
         .RequireAuthorization(new AuthorizeAttribute
     {
         AuthenticationSchemes = ApiTokenAuthenticationHandler.SchemeName
+    });
+    agentApi.AddEndpointFilter(async (context, next) =>
+    {
+        var path = context.HttpContext.Request.Path.Value?.TrimEnd('/');
+        if (path is not ("/v1/sync/status" or "/v1/capabilities" or "/v1") &&
+            !context.HttpContext.RequestServices.GetRequiredService<VaultSyncStateStore>().IsReady)
+            return Results.Json(new ObsidianBot.Models.ApiErrorResponse("VAULT_INITIALIZING",
+                "The vault is waiting for its initial sync."), statusCode: StatusCodes.Status503ServiceUnavailable);
+        return await next(context);
     });
     AgentApiEndpoints.Map(agentApi);
 }

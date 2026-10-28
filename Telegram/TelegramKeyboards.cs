@@ -12,6 +12,7 @@ public static class TelegramKeyboards
             new BotCommand { Command = "add", Description = "Quick add a text note" },
             new BotCommand { Command = "search", Description = "Search your vault" },
             new BotCommand { Command = "semantic", Description = "Find notes by meaning" },
+            new BotCommand { Command = "syncstatus", Description = "Check vault sync health" },
             new BotCommand { Command = "cancel", Description = "Cancel the current save flow" }
         ];
     }

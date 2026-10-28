@@ -8,11 +8,13 @@ namespace ObsidianBot.Services;
 public sealed class ObsidianVaultWriter
 {
     private readonly ObsidianBotOptions _options;
+    private readonly VaultSyncStateStore _syncState;
 
-    public ObsidianVaultWriter(ObsidianBotOptions options)
+    public ObsidianVaultWriter(ObsidianBotOptions options, VaultSyncStateStore syncState)
     {
         _options = options;
-        Directory.CreateDirectory(_options.VaultPath);
+        _syncState = syncState;
+        if (_syncState.IsReady) Directory.CreateDirectory(_options.VaultPath);
     }
 
     public DateOnly GetLocalDateToday()
@@ -23,12 +25,14 @@ public sealed class ObsidianVaultWriter
 
     public Task<SaveResult> SaveToInboxAsync(PendingCapture pending, CancellationToken ct)
     {
+        _syncState.EnsureReady();
         var notePath = ResolveVaultPath(_options.InboxNotePath);
         return SaveToNoteAsync(notePath, "inbox note", pending, prependDivider: true, bulletText: false, ct);
     }
 
     public Task<SaveResult> SaveToDailyNoteAsync(DateOnly date, PendingCapture pending, CancellationToken ct)
     {
+        _syncState.EnsureReady();
         var dailyDirectory = Path.GetDirectoryName(_options.DailyNotesPattern) ?? string.Empty;
         var relativePath = Path.Combine(dailyDirectory, $"{date:yyyy-MM-dd}.md");
         var notePath = ResolveVaultPath(relativePath);
@@ -37,12 +41,14 @@ public sealed class ObsidianVaultWriter
 
     public Task<SaveResult> SaveTaskToInboxAsync(string taskText, CancellationToken ct)
     {
+        _syncState.EnsureReady();
         var notePath = ResolveVaultPath(_options.InboxNotePath);
         return SaveTaskToNoteAsync(notePath, "inbox note", taskText, ct);
     }
 
     public Task<SaveResult> SaveTaskToDailyNoteAsync(DateOnly date, string taskText, CancellationToken ct)
     {
+        _syncState.EnsureReady();
         var dailyDirectory = Path.GetDirectoryName(_options.DailyNotesPattern) ?? string.Empty;
         var relativePath = Path.Combine(dailyDirectory, $"{date:yyyy-MM-dd}.md");
         var notePath = ResolveVaultPath(relativePath);
@@ -58,7 +64,6 @@ public sealed class ObsidianVaultWriter
         CancellationToken ct)
     {
         EnsureMarkdownPath(notePath);
-        Directory.CreateDirectory(Path.GetDirectoryName(notePath) ?? _options.VaultPath);
 
         string? mediaRelativePath = null;
         if (pending.MediaBytes is { Length: > 0 })
@@ -91,6 +96,7 @@ public sealed class ObsidianVaultWriter
 
         await using (await VaultWriteLock.AcquireAsync(notePath, ct))
         {
+            Directory.CreateDirectory(Path.GetDirectoryName(notePath) ?? _options.VaultPath);
             await AppendToFileAsync(notePath, entry, ct);
         }
 
@@ -104,11 +110,11 @@ public sealed class ObsidianVaultWriter
         CancellationToken ct)
     {
         EnsureMarkdownPath(notePath);
-        Directory.CreateDirectory(Path.GetDirectoryName(notePath) ?? _options.VaultPath);
 
         var entry = FormatTaskLine(taskText);
         await using (await VaultWriteLock.AcquireAsync(notePath, ct))
         {
+            Directory.CreateDirectory(Path.GetDirectoryName(notePath) ?? _options.VaultPath);
             await AppendToFileAsync(notePath, entry, ct);
         }
 
@@ -122,11 +128,11 @@ public sealed class ObsidianVaultWriter
         CancellationToken ct)
     {
         EnsureMarkdownPath(notePath);
-        Directory.CreateDirectory(Path.GetDirectoryName(notePath) ?? _options.VaultPath);
 
         var taskLine = FormatTaskLine(taskText);
         await using (await VaultWriteLock.AcquireAsync(notePath, ct))
         {
+            Directory.CreateDirectory(Path.GetDirectoryName(notePath) ?? _options.VaultPath);
             var existingContent = File.Exists(notePath)
                 ? await File.ReadAllTextAsync(notePath, ct)
                 : string.Empty;
@@ -141,7 +147,6 @@ public sealed class ObsidianVaultWriter
     private async Task<string> SaveMediaAsync(byte[] mediaBytes, string extension, CancellationToken ct)
     {
         var mediaDirectory = ResolveVaultPath(_options.MediaFolderPath);
-        Directory.CreateDirectory(mediaDirectory);
 
         var now = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, _options.TimeZone);
         var cleanExt = NormalizeExtension(extension);
@@ -155,6 +160,8 @@ public sealed class ObsidianVaultWriter
 
             try
             {
+                await using var lease = await VaultWriteLock.AcquireAsync(absolute, ct);
+                Directory.CreateDirectory(mediaDirectory);
                 await using var stream = new FileStream(absolute, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
                 await stream.WriteAsync(mediaBytes, ct);
                 await stream.FlushAsync(ct);

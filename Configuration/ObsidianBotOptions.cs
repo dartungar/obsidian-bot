@@ -46,10 +46,10 @@ public sealed record ObsidianBotOptions(
     public static ObsidianBotOptions Load(IConfiguration configuration)
     {
         var componentRole = (configuration["OBSIDIAN_COMPONENT_ROLE"] ?? "combined").Trim().ToLowerInvariant();
-        if (componentRole is not ("combined" or "telegram" or "agent-api" or "publisher"))
+        if (componentRole is not ("combined" or "telegram" or "agent-api" or "publisher" or "sync"))
         {
             throw new InvalidOperationException(
-                "OBSIDIAN_COMPONENT_ROLE must be one of: combined, telegram, agent-api, publisher.");
+                "OBSIDIAN_COMPONENT_ROLE must be one of: combined, telegram, agent-api, publisher, sync.");
         }
 
         var token = configuration["TELEGRAM_BOT_TOKEN"] ?? string.Empty;
@@ -71,16 +71,21 @@ public sealed record ObsidianBotOptions(
         var timeZoneId = configuration["BUTLER_TIMEZONE"] ?? "UTC";
 
         var vaultPath = Path.GetFullPath(configuration["OBSIDIAN_VAULT_PATH"] ?? "/var/notes");
+        var managedSync = configuration["OBSIDIAN_SYNC_ENABLED"] is not { } rawSyncEnabled
+            ? componentRole == "sync"
+            : bool.TryParse(rawSyncEnabled, out var syncEnabled) ? syncEnabled
+                : throw new InvalidOperationException("OBSIDIAN_SYNC_ENABLED must be true or false.");
+        var storagePrefix = managedSync ? "/var/lib/obsidian-bot/" : ".obsidian-bot/";
 
         var searchDatabasePath = ResolveStoragePath(
             vaultPath,
-            configuration["OBSIDIAN_SEARCH_DATABASE_PATH"] ?? ".obsidian-bot/search.db");
+            configuration["OBSIDIAN_SEARCH_DATABASE_PATH"] ?? storagePrefix + "search.db");
         var proposalDatabasePath = ResolveStoragePath(
             vaultPath,
-            configuration["OBSIDIAN_PROPOSAL_DATABASE_PATH"] ?? ".obsidian-bot/proposals.db");
+            configuration["OBSIDIAN_PROPOSAL_DATABASE_PATH"] ?? storagePrefix + "proposals.db");
         var proposalSnapshotDirectory = ResolveStoragePath(
             vaultPath,
-            configuration["OBSIDIAN_PROPOSAL_SNAPSHOT_DIRECTORY"] ?? ".obsidian-bot/snapshots");
+            configuration["OBSIDIAN_PROPOSAL_SNAPSHOT_DIRECTORY"] ?? storagePrefix + "snapshots");
 
         return new ObsidianBotOptions(
             ComponentRole: componentRole,

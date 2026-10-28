@@ -11,20 +11,24 @@ public sealed class VaultSearchIndexer : BackgroundService
     private readonly ILogger<VaultSearchIndexer> _logger;
     private readonly ObsidianBotOptions _options;
     private readonly VaultSearchService _search;
+    private readonly VaultSyncStateStore _syncState;
     private readonly SemaphoreSlim _indexRequested = new(0, 1);
 
     public VaultSearchIndexer(
         ILogger<VaultSearchIndexer> logger,
         ObsidianBotOptions options,
-        VaultSearchService search)
+        VaultSearchService search,
+        VaultSyncStateStore syncState)
     {
         _logger = logger;
         _options = options;
         _search = search;
+        _syncState = syncState;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        await _syncState.WaitUntilReadyAsync(stoppingToken);
         Directory.CreateDirectory(_options.VaultPath);
         using var watcher = StartWatcher();
 

@@ -5,6 +5,7 @@ namespace ObsidianBot.Api;
 
 public static class ApiAuthorization
 {
+    public const string SyncReadPolicy = "sync-read";
     public const string AgentReadPolicy = "agent-read";
     public const string ProposalCreatePolicy = "proposal-create";
     public const string ProposalReadPolicy = "proposal-read";
@@ -16,6 +17,7 @@ public static class ApiAuthorization
 
     public static void Configure(AuthorizationOptions options)
     {
+        AddScopePolicy(options, SyncReadPolicy, "sync:read");
         AddScopePolicy(options, AgentReadPolicy, "notes:read");
         AddScopePolicy(options, ProposalCreatePolicy, "proposals:create");
         AddScopePolicy(options, ProposalReadPolicy, "proposals:read");

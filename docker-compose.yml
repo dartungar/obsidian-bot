@@ -1,10 +1,56 @@
 services:
+  obsidian-sync:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: sync
+    environment:
+      - OBSIDIAN_COMPONENT_ROLE=sync
+      - OBSIDIAN_SYNC_ENABLED=${OBSIDIAN_SYNC_ENABLED:-false}
+      - OBSIDIAN_VAULT_PATH=/var/notes
+      - OBSIDIAN_SYNC_STATE_DIRECTORY=/var/lib/obsidian-bot/sync
+      - OBSIDIAN_SYNC_CONFIG_DIRECTORY=/var/lib/obsidian-headless
+      - XDG_CONFIG_HOME=/var/lib/obsidian-headless
+      - OBSIDIAN_SYNC_VAULT=${OBSIDIAN_SYNC_VAULT:-}
+      - OBSIDIAN_AUTH_TOKEN=${OBSIDIAN_AUTH_TOKEN:-}
+      - OBSIDIAN_AUTH_TOKEN_FILE=${OBSIDIAN_AUTH_TOKEN_FILE:-}
+      - OBSIDIAN_SYNC_PASSWORD=${OBSIDIAN_SYNC_PASSWORD:-}
+      - OBSIDIAN_SYNC_PASSWORD_FILE=${OBSIDIAN_SYNC_PASSWORD_FILE:-}
+      - OBSIDIAN_SYNC_CREATE_REMOTE=${OBSIDIAN_SYNC_CREATE_REMOTE:-false}
+      - OBSIDIAN_SYNC_ADOPT_EXISTING=${OBSIDIAN_SYNC_ADOPT_EXISTING:-false}
+      - OBSIDIAN_SYNC_DEVICE_NAME=${OBSIDIAN_SYNC_DEVICE_NAME:-obsidian-bot}
+      - OBSIDIAN_AGENT_WRITABLE_FOLDERS=${OBSIDIAN_AGENT_WRITABLE_FOLDERS:-_inbox}
+      - OBSIDIAN_AGENT_DENIED_FOLDERS=${OBSIDIAN_AGENT_DENIED_FOLDERS:-.obsidian,.git,attachments,templates,04 archive}
+      - OBSIDIAN_SYNC_REGION=${OBSIDIAN_SYNC_REGION:-}
+      - OBSIDIAN_SYNC_INTERVAL_SECONDS=${OBSIDIAN_SYNC_INTERVAL_SECONDS:-25}
+      - OBSIDIAN_SYNC_TIMEOUT_SECONDS=${OBSIDIAN_SYNC_TIMEOUT_SECONDS:-180}
+      - OBSIDIAN_SYNC_INITIAL_TIMEOUT_SECONDS=${OBSIDIAN_SYNC_INITIAL_TIMEOUT_SECONDS:-1800}
+      - OBSIDIAN_SYNC_STALE_AFTER_SECONDS=${OBSIDIAN_SYNC_STALE_AFTER_SECONDS:-300}
+      - OBSIDIAN_SYNC_MAX_BACKOFF_SECONDS=${OBSIDIAN_SYNC_MAX_BACKOFF_SECONDS:-300}
+      - OBSIDIAN_SYNC_ATTENTION_RETRY_SECONDS=${OBSIDIAN_SYNC_ATTENTION_RETRY_SECONDS:-900}
+      - ASPNETCORE_URLS=http://+:8080
+    volumes:
+      - /var/obsidian:/var/notes
+      - obsidian-bot-data:/var/lib/obsidian-bot
+      - obsidian-headless-data:/var/lib/obsidian-headless
+    restart: unless-stopped
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "dotnet", "ObsidianBot.dll", "--health-check", "http://127.0.0.1:8080/sync-healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30m
+
   obsidian-bot:
     build:
       context: .
       dockerfile: Dockerfile
     environment:
       - OBSIDIAN_COMPONENT_ROLE=telegram
+      - OBSIDIAN_SYNC_ENABLED=${OBSIDIAN_SYNC_ENABLED:-false}
+      - OBSIDIAN_SYNC_STATE_DIRECTORY=/var/lib/obsidian-bot/sync
+      - OBSIDIAN_SYNC_STALE_AFTER_SECONDS=${OBSIDIAN_SYNC_STALE_AFTER_SECONDS:-300}
       - TELEGRAM_BOT_TOKEN=${OBSIDIAN_BOT_TOKEN}
       - TELEGRAM_ALLOWED_USER_ID=${TELEGRAM_ALLOWED_USER_ID}
       - BUTLER_TIMEZONE=${BUTLER_TIMEZONE:-UTC}
@@ -25,7 +71,7 @@ services:
       - obsidian-bot-data:/var/lib/obsidian-bot
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "grep -q ObsidianBot.dll /proc/1/cmdline"]
+      test: ["CMD", "dotnet", "ObsidianBot.dll", "--health-check", "http://127.0.0.1:8080/healthz"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -42,6 +88,9 @@ services:
       dockerfile: Dockerfile
     environment:
       - OBSIDIAN_COMPONENT_ROLE=agent-api
+      - OBSIDIAN_SYNC_ENABLED=${OBSIDIAN_SYNC_ENABLED:-false}
+      - OBSIDIAN_SYNC_STATE_DIRECTORY=/var/lib/obsidian-bot/sync
+      - OBSIDIAN_SYNC_STALE_AFTER_SECONDS=${OBSIDIAN_SYNC_STALE_AFTER_SECONDS:-300}
       - OBSIDIAN_VAULT_PATH=/var/notes
       - OBSIDIAN_SEARCH_DATABASE_PATH=/var/lib/obsidian-bot/agent-search.db
       - OBSIDIAN_PROPOSAL_DATABASE_PATH=/var/lib/obsidian-bot/proposals.db
@@ -68,7 +117,7 @@ services:
       - "${OBSIDIAN_API_BIND_ADDRESS:-127.0.0.1}:${OBSIDIAN_API_PORT:-6772}:8080"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "grep -q ObsidianBot.dll /proc/1/cmdline"]
+      test: ["CMD", "dotnet", "ObsidianBot.dll", "--health-check", "http://127.0.0.1:8080/healthz"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -80,6 +129,9 @@ services:
       dockerfile: Dockerfile
     environment:
       - OBSIDIAN_COMPONENT_ROLE=publisher
+      - OBSIDIAN_SYNC_ENABLED=${OBSIDIAN_SYNC_ENABLED:-false}
+      - OBSIDIAN_SYNC_STATE_DIRECTORY=/var/lib/obsidian-bot/sync
+      - OBSIDIAN_SYNC_STALE_AFTER_SECONDS=${OBSIDIAN_SYNC_STALE_AFTER_SECONDS:-300}
       - OBSIDIAN_VAULT_PATH=/var/notes
       - OBSIDIAN_PROPOSAL_DATABASE_PATH=/var/lib/obsidian-bot/proposals.db
       - OBSIDIAN_PROPOSAL_SNAPSHOT_DIRECTORY=/var/lib/obsidian-bot/snapshots
@@ -92,7 +144,7 @@ services:
       - obsidian-bot-data:/var/lib/obsidian-bot
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "grep -q ObsidianBot.dll /proc/1/cmdline"]
+      test: ["CMD", "dotnet", "ObsidianBot.dll", "--health-check", "http://127.0.0.1:8080/healthz"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -100,3 +152,4 @@ services:
 
 volumes:
   obsidian-bot-data:
+  obsidian-headless-data:

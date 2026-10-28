@@ -10,36 +10,50 @@ with the official `obsidian-headless` client pinned to **0.0.14**. Existing
 deployments keep their current behavior until `OBSIDIAN_SYNC_ENABLED=true`.
 An active Obsidian Sync subscription is required.
 
-### Setup
+### Coolify setup
 
-1. Copy `.env.example` to `.env` and fill in the Telegram/API settings. Set
-   `OBSIDIAN_SYNC_VAULT` to the remote vault ID (preferred) or a unique name.
-2. Supply `OBSIDIAN_AUTH_TOKEN`, or perform the one-time interactive login below.
-   Supply `OBSIDIAN_SYNC_PASSWORD` for the remote vault's end-to-end encryption
-   password. Account login and vault encryption use different credentials.
-3. Stop any other sync client operating on the server's `/var/obsidian` directory.
-   Desktop/mobile clients on other devices continue syncing normally.
-4. For an existing, nonempty `/var/obsidian`, set
-   `OBSIDIAN_SYNC_ADOPT_EXISTING=true`. Before its first managed sync, the app
-   creates an `initial-vault-backup-*.zip` in the shared sync state directory.
-   Symbolic links are refused during adoption. The backup does not expire
-   automatically; retain it until migration is verified.
-5. Start the services with `docker compose up -d --build`.
+Deploy this repository's Compose file through Coolify and set these runtime
+environment variables (keep passwords as secrets, unavailable during builds):
 
-If supplying a token is inconvenient, log in once, including MFA when prompted:
-
-```bash
-docker compose build obsidian-sync
-docker compose run --rm --no-deps --entrypoint ob obsidian-sync login
-docker compose up -d --build
+```env
+OBSIDIAN_SYNC_ENABLED=true
+OBSIDIAN_ACCOUNT_EMAIL=your-obsidian-account-email
+OBSIDIAN_ACCOUNT_PASSWORD=your-obsidian-account-password
+OBSIDIAN_SYNC_VAULT=your-vault-name-or-id
+OBSIDIAN_SYNC_PASSWORD=your-vault-encryption-password
 ```
 
-Login credentials and headless sync metadata persist in the private
+Fill in the existing Telegram/API settings too. A unique vault name works, so
+you do not need to retrieve an ID or auth token manually. On startup the app
+uses the official headless client to log in, saves its session, configures the
+vault, and starts sync. Leave `OBSIDIAN_AUTH_TOKEN` empty for automatic login.
+An explicitly supplied token takes precedence; an invalid explicit token must
+be replaced or removed before account-based login will be attempted.
+
+If your account uses MFA, let the first deployment finish building. When
+`/syncstatus` reports `SYNC_MFA_REQUIRED`, set `OBSIDIAN_ACCOUNT_MFA_CODE` to a
+fresh authenticator code in Coolify and restart `obsidian-sync` without another
+build. After successful login, clear this one-time code. Valid saved sessions
+are reused across restarts, so MFA is needed again only when authentication
+expires. Expired cached sessions are renewed automatically when the configured
+credentials suffice. Login failures retry slowly and appear in sync status;
+they do not crash the container or expose account credentials in logs.
+
+Stop any other sync client operating on the server's `/var/obsidian` directory.
+Desktop/mobile clients on other devices continue syncing normally. For an
+existing, nonempty `/var/obsidian`, set `OBSIDIAN_SYNC_ADOPT_EXISTING=true`.
+Before its first managed sync, the app creates an `initial-vault-backup-*.zip`
+in the shared sync state directory. Symbolic links are refused during adoption.
+The backup does not expire automatically; retain it until migration is verified.
+
+Account sessions and headless sync metadata persist in the private
 `obsidian-headless-data` volume. They are mounted only into `obsidian-sync`.
-Only the sync service receives the Obsidian authentication token and encryption
-password. The derived encryption key persists after setup, so the password is
-not required for subsequent rounds using that configuration. Keep both
-persistent volumes and the vault together when backing up or migrating.
+Only the sync service receives the account credentials, MFA code, authentication
+token, and vault encryption password. Account and vault passwords are separate.
+The derived encryption key persists after setup, so the vault password is not
+required for subsequent rounds using that configuration. Keep both persistent
+volumes and the vault together when backing up or migrating. For local Compose
+use, copy `.env.example` to `.env`, fill in the same settings, and start the stack.
 
 To create a remote vault automatically, set `OBSIDIAN_SYNC_CREATE_REMOTE=true`
 and use its desired **name** as `OBSIDIAN_SYNC_VAULT`. Creation uses end-to-end
@@ -47,7 +61,8 @@ encryption and requires the encryption password. Existing matching vaults are
 reused; ambiguous names are refused. Creation is never attempted after a saved
 remote identity disappears.
 
-For container secrets, set `OBSIDIAN_AUTH_TOKEN_FILE` and/or
+For container secrets, set `OBSIDIAN_ACCOUNT_PASSWORD_FILE`,
+`OBSIDIAN_ACCOUNT_MFA_CODE_FILE`, `OBSIDIAN_AUTH_TOKEN_FILE`, and/or
 `OBSIDIAN_SYNC_PASSWORD_FILE` to mounted secret paths. File values override
 environment values and are read again when commands run. These paths must be
 mounted into the sync container, for example with a Compose override:
@@ -125,12 +140,20 @@ secrets:
 | `OBSIDIAN_SYNC_DEVICE_NAME` | `obsidian-bot` |
 | `OBSIDIAN_SYNC_REGION` | automatic; used only for remote creation |
 
-After authentication expires, replace the token secret or repeat the login
-command, then restart `obsidian-sync` to retry immediately. For an identity
+After a login failure, update account credentials/MFA or replace an explicit
+token in Coolify, then restart `obsidian-sync` to retry immediately. For an identity
 mismatch or missing vault marker, restore the matching vault and state volumes;
 do not clear headless metadata or relink automatically. For an intentional move
 to a different remote vault, stop the services and initialize a separate local
 vault with fresh sync state, then migrate notes explicitly.
+
+Empty storage-path variables use defaults. Validation checks only the storage
+used by each component role; a sync-only container does not open or validate
+search/proposal databases. If an active setting points inside the vault, the
+startup error names that variable and its resolved path. Keep shared sync
+state under `/var/lib/obsidian-bot/sync`, private headless state under
+`/var/lib/obsidian-headless`, and search/proposal databases and snapshots under
+`/var/lib/obsidian-bot`, outside the `/var/notes` vault mount.
 
 ### Verification
 
@@ -143,8 +166,9 @@ docker compose config --quiet
 The integration suite uses temporary vaults, real application processes and
 HTTP requests, and a fake headless executable. It covers initialization,
 adoption backups, remote creation, restart persistence, authentication and stale
-health, incomplete rounds, timeouts and child termination, owner exclusivity,
-and coordination with API writes. It never connects to Obsidian or Telegram.
+health, automatic login and MFA, cached-session renewal, storage-path validation,
+incomplete rounds, timeouts and child termination, owner exclusivity, and
+coordination with API writes. It never connects to Obsidian or Telegram.
 
 ## Search
 

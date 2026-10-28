@@ -59,16 +59,17 @@ public sealed class SyncProcessClient(ObsidianSyncOptions options)
 
 public sealed record SyncProcessResult(int ExitCode, string Output, string Error, bool FullySynced)
 {
+    public bool IsAuthenticationFailure => ExitCode == 2 ||
+        new[] { "No account logged in", "Not logged in", "Invalid token", "Token is invalid", "Unauthorized",
+            "401", "session has expired", "session expired", "not authenticated", "please log in again" }
+        .Any(message => (Error + Output).Contains(message, StringComparison.OrdinalIgnoreCase));
+
     public void EnsureSuccess(bool requireCompletion = false)
     {
         if (ExitCode == 0 && (!requireCompletion || FullySynced && string.IsNullOrWhiteSpace(Error))) return;
-        var diagnostic = Error + Output;
         if (ExitCode == 3)
             throw new SyncFailure("SYNC_SETUP_REQUIRED", "The headless vault configuration is missing or the remote vault is unavailable.", true);
-        if (ExitCode == 2 || diagnostic.Contains("No account logged in", StringComparison.OrdinalIgnoreCase) ||
-            diagnostic.Contains("Invalid token", StringComparison.OrdinalIgnoreCase) ||
-            diagnostic.Contains("Unauthorized", StringComparison.OrdinalIgnoreCase) ||
-            diagnostic.Contains("401", StringComparison.Ordinal))
+        if (IsAuthenticationFailure)
             throw new SyncFailure("SYNC_CREDENTIALS", "Obsidian authentication or the vault encryption password needs attention.", true);
         throw new SyncFailure(requireCompletion && ExitCode == 0 ? "SYNC_INCOMPLETE" : "SYNC_COMMAND_FAILED",
             "The headless client did not complete successfully. Check credentials, connectivity, storage, and subscription limits.");

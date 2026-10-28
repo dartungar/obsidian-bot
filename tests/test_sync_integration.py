@@ -342,6 +342,92 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertEqual("disabled", self.request(api, "/v1/sync/status", "test-agent")[1]["state"])
         self.assertEqual([], self.events())
 
+    def test_sync_owner_ignores_unused_vault_local_application_database_paths(self):
+        self.start(OBSIDIAN_SEARCH_DATABASE_PATH=".obsidian-bot/search.db",
+                   OBSIDIAN_PROPOSAL_DATABASE_PATH=".obsidian-bot/proposals.db",
+                   OBSIDIAN_PROPOSAL_SNAPSHOT_DIRECTORY=".obsidian-bot/snapshots")
+        self.wait(lambda: self.status().get("state") == "healthy")
+        self.assertFalse((self.root / "vault/.obsidian-bot/search.db").exists())
+
+    def test_empty_database_path_settings_use_defaults(self):
+        # Covers the Coolify startup crash without opening the unused databases.
+        self.start(OBSIDIAN_SEARCH_DATABASE_PATH="",
+                   OBSIDIAN_PROPOSAL_DATABASE_PATH=" ",
+                   OBSIDIAN_PROPOSAL_SNAPSHOT_DIRECTORY="")
+        self.wait(lambda: self.status().get("state") == "healthy")
+
+    def test_active_storage_inside_vault_reports_the_offending_setting(self):
+        env = {key: value for key, value in os.environ.items() if not key.startswith("OBSIDIAN_")}
+        env.update({"OBSIDIAN_COMPONENT_ROLE": "sync", "OBSIDIAN_SYNC_ENABLED": "true",
+                    "OBSIDIAN_SYNC_VAULT": "vault-1", "OBSIDIAN_VAULT_PATH": str(self.root / "vault"),
+                    "OBSIDIAN_SYNC_STATE_DIRECTORY": str(self.root / "vault/state")})
+        result = subprocess.run(["dotnet", str(DLL)], env=env, capture_output=True, timeout=10)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(b"OBSIDIAN_SYNC_STATE_DIRECTORY resolves to", result.stderr)
+
+    def test_automatic_login_persists_session_and_skips_login_on_restart(self):
+        self.control(mode="success", require_session=True)
+        owner, _ = self.start(OBSIDIAN_AUTH_TOKEN="", OBSIDIAN_ACCOUNT_EMAIL="test@example.com",
+                              OBSIDIAN_ACCOUNT_PASSWORD="account-secret-do-not-leak")
+        self.wait(lambda: self.status().get("state") == "healthy")
+        self.assertEqual(1, len(self.events("login", "command")))
+        self.assertTrue((self.root / "private/obsidian-headless/auth_token").exists())
+        self.stop(owner)
+        rounds = len(self.events("sync", "end"))
+        self.start(OBSIDIAN_AUTH_TOKEN="", OBSIDIAN_ACCOUNT_EMAIL="test@example.com",
+                   OBSIDIAN_ACCOUNT_PASSWORD="unused-wrong-password")
+        self.wait(lambda: len(self.events("sync", "end")) > rounds)
+        self.assertEqual(1, len(self.events("login", "command")))
+        self.assertNotIn("account-secret-do-not-leak", "".join(path.read_text() for path in self.root.glob("app-*.log")))
+
+    def test_expired_cached_session_is_refreshed_automatically(self):
+        self.control(mode="success", require_session=True)
+        owner, _ = self.start(OBSIDIAN_AUTH_TOKEN="", OBSIDIAN_ACCOUNT_EMAIL="test@example.com",
+                              OBSIDIAN_ACCOUNT_PASSWORD="account-secret-do-not-leak")
+        self.wait(lambda: self.status().get("state") == "healthy")
+        self.stop(owner)
+        self.control(mode="success", require_session=True, session_expired=True)
+        rounds = len(self.events("sync", "end"))
+        self.start(OBSIDIAN_AUTH_TOKEN="", OBSIDIAN_ACCOUNT_EMAIL="test@example.com",
+                   OBSIDIAN_ACCOUNT_PASSWORD="account-secret-do-not-leak")
+        self.wait(lambda: len(self.events("sync", "end")) > rounds)
+        self.assertEqual(2, len(self.events("login", "command")))
+        self.assertEqual(1, len(self.events("sync-setup", "command")))
+
+    def test_mfa_can_be_supplied_in_coolify_and_cached_afterward(self):
+        self.control(mode="success", require_session=True, mfa="123456")
+        owner, _ = self.start(OBSIDIAN_AUTH_TOKEN="", OBSIDIAN_ACCOUNT_EMAIL="test@example.com",
+                              OBSIDIAN_ACCOUNT_PASSWORD="account-secret-do-not-leak")
+        self.wait(lambda: self.status().get("errorCode") == "SYNC_MFA_REQUIRED")
+        self.assertEqual([], self.events("sync", "start"))
+        self.assertIn("OBSIDIAN_ACCOUNT_MFA_CODE", self.status()["errorMessage"])
+        self.stop(owner)
+        self.start(OBSIDIAN_AUTH_TOKEN="", OBSIDIAN_ACCOUNT_EMAIL="test@example.com",
+                   OBSIDIAN_ACCOUNT_PASSWORD="account-secret-do-not-leak", OBSIDIAN_ACCOUNT_MFA_CODE="123456")
+        self.wait(lambda: self.status().get("state") == "healthy")
+        self.assertNotIn("123456", (self.root / "state/status.json").read_text())
+
+    def test_explicit_invalid_token_does_not_trigger_account_login(self):
+        self.control(mode="success", require_session=True, invalid_explicit_token=True)
+        self.start(OBSIDIAN_ACCOUNT_EMAIL="test@example.com", OBSIDIAN_ACCOUNT_PASSWORD="account-secret-do-not-leak")
+        self.wait(lambda: self.status().get("errorCode") == "SYNC_CREDENTIALS")
+        self.assertEqual([], self.events("login", "command"))
+
+    def test_network_failure_does_not_trigger_account_login(self):
+        self.control(mode="success", list_network_failure=True)
+        self.start(OBSIDIAN_AUTH_TOKEN="", OBSIDIAN_ACCOUNT_EMAIL="test@example.com",
+                   OBSIDIAN_ACCOUNT_PASSWORD="account-secret-do-not-leak")
+        self.wait(lambda: self.status().get("state") == "degraded")
+        self.assertEqual([], self.events("login", "command"))
+
+    def test_wrong_account_password_is_redacted(self):
+        self.control(mode="success", require_session=True)
+        self.start(OBSIDIAN_AUTH_TOKEN="", OBSIDIAN_ACCOUNT_EMAIL="test@example.com",
+                   OBSIDIAN_ACCOUNT_PASSWORD="wrong-password")
+        self.wait(lambda: self.status().get("errorCode") == "SYNC_LOGIN_FAILED")
+        self.assertNotIn("account-secret-do-not-leak", (self.root / "state/status.json").read_text())
+        self.assertNotIn("account-secret-do-not-leak", "".join(path.read_text() for path in self.root.glob("app-*.log")))
+
 
 if __name__ == "__main__":
     unittest.main()

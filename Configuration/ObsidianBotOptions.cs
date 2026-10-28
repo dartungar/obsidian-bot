@@ -70,22 +70,22 @@ public sealed record ObsidianBotOptions(
 
         var timeZoneId = configuration["BUTLER_TIMEZONE"] ?? "UTC";
 
-        var vaultPath = Path.GetFullPath(configuration["OBSIDIAN_VAULT_PATH"] ?? "/var/notes");
-        var managedSync = configuration["OBSIDIAN_SYNC_ENABLED"] is not { } rawSyncEnabled
+        var vaultPath = Path.GetFullPath(ValueOrDefault(configuration["OBSIDIAN_VAULT_PATH"], "/var/notes"));
+        var managedSync = string.IsNullOrWhiteSpace(configuration["OBSIDIAN_SYNC_ENABLED"])
             ? componentRole == "sync"
-            : bool.TryParse(rawSyncEnabled, out var syncEnabled) ? syncEnabled
+            : bool.TryParse(configuration["OBSIDIAN_SYNC_ENABLED"], out var syncEnabled) ? syncEnabled
                 : throw new InvalidOperationException("OBSIDIAN_SYNC_ENABLED must be true or false.");
         var storagePrefix = managedSync ? "/var/lib/obsidian-bot/" : ".obsidian-bot/";
 
         var searchDatabasePath = ResolveStoragePath(
             vaultPath,
-            configuration["OBSIDIAN_SEARCH_DATABASE_PATH"] ?? storagePrefix + "search.db");
+            ValueOrDefault(configuration["OBSIDIAN_SEARCH_DATABASE_PATH"], storagePrefix + "search.db"));
         var proposalDatabasePath = ResolveStoragePath(
             vaultPath,
-            configuration["OBSIDIAN_PROPOSAL_DATABASE_PATH"] ?? storagePrefix + "proposals.db");
+            ValueOrDefault(configuration["OBSIDIAN_PROPOSAL_DATABASE_PATH"], storagePrefix + "proposals.db"));
         var proposalSnapshotDirectory = ResolveStoragePath(
             vaultPath,
-            configuration["OBSIDIAN_PROPOSAL_SNAPSHOT_DIRECTORY"] ?? storagePrefix + "snapshots");
+            ValueOrDefault(configuration["OBSIDIAN_PROPOSAL_SNAPSHOT_DIRECTORY"], storagePrefix + "snapshots"));
 
         return new ObsidianBotOptions(
             ComponentRole: componentRole,
@@ -144,6 +144,9 @@ public sealed record ObsidianBotOptions(
 
         return fullPath;
     }
+
+    private static string ValueOrDefault(string? value, string fallback) =>
+        string.IsNullOrWhiteSpace(value) ? fallback : value;
 
     private static IReadOnlyList<string> ParsePathList(string? value, string fallback = "")
     {

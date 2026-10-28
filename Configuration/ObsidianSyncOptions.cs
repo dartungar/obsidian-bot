@@ -9,6 +9,11 @@ public sealed record ObsidianSyncOptions
     public string Executable { get; init; } = "ob";
     public string AuthToken { get; init; } = "";
     public string AuthTokenFile { get; init; } = "";
+    public string AccountEmail { get; init; } = "";
+    public string AccountPassword { get; init; } = "";
+    public string AccountPasswordFile { get; init; } = "";
+    public string AccountMfaCode { get; init; } = "";
+    public string AccountMfaCodeFile { get; init; } = "";
     public string Password { get; init; } = "";
     public string PasswordFile { get; init; } = "";
     public string DeviceName { get; init; } = "obsidian-bot";
@@ -29,11 +34,16 @@ public sealed record ObsidianSyncOptions
             Enabled = bool.TryParse(configuration["OBSIDIAN_SYNC_ENABLED"], out var enabled)
                 ? enabled : bot.ComponentRole == "sync",
             Vault = configuration["OBSIDIAN_SYNC_VAULT"]?.Trim() ?? "",
-            StateDirectory = Path.GetFullPath(configuration["OBSIDIAN_SYNC_STATE_DIRECTORY"] ?? "/var/lib/obsidian-bot/sync"),
-            ConfigDirectory = Path.GetFullPath(configuration["OBSIDIAN_SYNC_CONFIG_DIRECTORY"] ?? "/var/lib/obsidian-headless"),
+            StateDirectory = Path.GetFullPath(ValueOrDefault(configuration["OBSIDIAN_SYNC_STATE_DIRECTORY"], "/var/lib/obsidian-bot/sync")),
+            ConfigDirectory = Path.GetFullPath(ValueOrDefault(configuration["OBSIDIAN_SYNC_CONFIG_DIRECTORY"], "/var/lib/obsidian-headless")),
             Executable = configuration["OBSIDIAN_SYNC_EXECUTABLE"] ?? "ob",
             AuthToken = configuration["OBSIDIAN_AUTH_TOKEN"] ?? "",
             AuthTokenFile = configuration["OBSIDIAN_AUTH_TOKEN_FILE"] ?? "",
+            AccountEmail = configuration["OBSIDIAN_ACCOUNT_EMAIL"]?.Trim() ?? "",
+            AccountPassword = configuration["OBSIDIAN_ACCOUNT_PASSWORD"] ?? "",
+            AccountPasswordFile = configuration["OBSIDIAN_ACCOUNT_PASSWORD_FILE"] ?? "",
+            AccountMfaCode = configuration["OBSIDIAN_ACCOUNT_MFA_CODE"]?.Trim() ?? "",
+            AccountMfaCodeFile = configuration["OBSIDIAN_ACCOUNT_MFA_CODE_FILE"] ?? "",
             Password = configuration["OBSIDIAN_SYNC_PASSWORD"] ?? "",
             PasswordFile = configuration["OBSIDIAN_SYNC_PASSWORD_FILE"] ?? "",
             DeviceName = configuration["OBSIDIAN_SYNC_DEVICE_NAME"] ?? "obsidian-bot",
@@ -50,21 +60,37 @@ public sealed record ObsidianSyncOptions
 
         if (options.Enabled)
         {
-            foreach (var path in new[] { options.StateDirectory, options.ConfigDirectory,
-                         bot.SearchDatabasePath, bot.ProposalDatabasePath, bot.ProposalSnapshotDirectory })
+            var ownsSync = bot.ComponentRole is "sync" or "combined";
+            var storagePaths = new List<(string Setting, string Path)>
+            {
+                ("OBSIDIAN_SYNC_STATE_DIRECTORY", options.StateDirectory)
+            };
+            if (ownsSync) storagePaths.Add(("OBSIDIAN_SYNC_CONFIG_DIRECTORY", options.ConfigDirectory));
+            if (bot.RunsSearchIndexer) storagePaths.Add(("OBSIDIAN_SEARCH_DATABASE_PATH", bot.SearchDatabasePath));
+            if (bot.RunsAgentApi || bot.RunsPublisher)
+            {
+                storagePaths.Add(("OBSIDIAN_PROPOSAL_DATABASE_PATH", bot.ProposalDatabasePath));
+                storagePaths.Add(("OBSIDIAN_PROPOSAL_SNAPSHOT_DIRECTORY", bot.ProposalSnapshotDirectory));
+            }
+            foreach (var (setting, path) in storagePaths)
             {
                 if (IsWithin(path, bot.VaultPath))
-                    throw new InvalidOperationException("Managed sync requires application and headless state outside the vault.");
+                    throw new InvalidOperationException(
+                        $"{setting} resolves to '{path}', inside OBSIDIAN_VAULT_PATH '{bot.VaultPath}'. " +
+                        "Managed sync requires this state outside the vault; use /var/lib/obsidian-bot or /var/lib/obsidian-headless.");
             }
-            if ((bot.ComponentRole is "sync" or "combined") && string.IsNullOrWhiteSpace(options.Vault))
+            if (ownsSync && string.IsNullOrWhiteSpace(options.Vault))
                 throw new InvalidOperationException("OBSIDIAN_SYNC_VAULT is required for the sync owner.");
-            if (IsWithin(options.ConfigDirectory, options.StateDirectory) || IsWithin(options.StateDirectory, options.ConfigDirectory))
+            if (ownsSync && (IsWithin(options.ConfigDirectory, options.StateDirectory) || IsWithin(options.StateDirectory, options.ConfigDirectory)))
                 throw new InvalidOperationException("Sync status and private headless configuration must use separate directories.");
         }
         return options;
     }
 
     public string ReadAuthToken() => ReadSecret(AuthTokenFile, AuthToken);
+    public bool HasExplicitAuthToken => !string.IsNullOrWhiteSpace(AuthToken) || !string.IsNullOrWhiteSpace(AuthTokenFile);
+    public string ReadAccountPassword() => ReadSecret(AccountPasswordFile, AccountPassword);
+    public string ReadAccountMfaCode() => ReadSecret(AccountMfaCodeFile, AccountMfaCode);
     public string ReadPassword() => ReadSecret(PasswordFile, Password);
 
     private static string ReadSecret(string file, string fallback)
@@ -81,9 +107,13 @@ public sealed record ObsidianSyncOptions
     private static bool Boolean(IConfiguration configuration, string key) =>
         bool.TryParse(configuration[key], out var value) && value;
 
+    private static string ValueOrDefault(string? value, string fallback) =>
+        string.IsNullOrWhiteSpace(value) ? fallback : value;
+
     private static int Positive(IConfiguration configuration, string key, int fallback)
     {
-        if (configuration[key] is not { } raw) return fallback;
+        if (string.IsNullOrWhiteSpace(configuration[key])) return fallback;
+        var raw = configuration[key];
         return int.TryParse(raw, out var value) && value > 0 && value <= 86400
             ? value : throw new InvalidOperationException($"{key} must be between 1 and 86400.");
     }

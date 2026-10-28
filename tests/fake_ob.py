@@ -28,7 +28,35 @@ def event(kind, **fields):
 event("command")
 config_path = root / "headless-config.json"
 vaults = control.get("vaults", [{"id": "vault-1", "name": "Test Vault", "region": "test"}])
-if command == "sync-list-remote":
+auth_path = Path(os.environ["XDG_CONFIG_HOME"]) / "obsidian-headless/auth_token"
+if command == "login":
+    if option("--email") != control.get("account_email", "test@example.com") or option("--password") != "account-secret-do-not-leak":
+        print("Login failed: incorrect password account-secret-do-not-leak", file=sys.stderr)
+        sys.exit(2)
+    if control.get("mfa") and option("--mfa") != control["mfa"]:
+        print("Login failed: 2FA code is incorrect. account-secret-do-not-leak", file=sys.stderr)
+        sys.exit(2)
+    auth_path.parent.mkdir(parents=True, exist_ok=True)
+    auth_path.write_text("cached-token")
+    auth_path.chmod(0o600)
+    control["session_expired"] = False
+    control_path.write_text(json.dumps(control))
+    print("Logged in as Test User (test@example.com)")
+elif command == "sync-list-remote":
+    if control.get("require_session"):
+        if os.environ.get("OBSIDIAN_AUTH_TOKEN"):
+            if control.get("invalid_explicit_token"):
+                print("Invalid token", file=sys.stderr)
+                sys.exit(2)
+        elif not auth_path.exists():
+            print("No account logged in.", file=sys.stderr)
+            sys.exit(2)
+        elif control.get("session_expired"):
+            print("Your session has expired. Please log in again.", file=sys.stderr)
+            sys.exit(1)
+    if control.get("list_network_failure"):
+        print("HTTP Error 503", file=sys.stderr)
+        sys.exit(1)
     if control.get("mode") == "auth_initial":
         print("No account logged in. secret-do-not-leak", file=sys.stderr)
         sys.exit(2)

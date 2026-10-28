@@ -38,8 +38,7 @@ public sealed class VaultBootstrapService(
             throw new SyncFailure("SYNC_IDENTITY_CHANGED", "The configured vault differs from the saved identity. Migrate it explicitly before syncing.", true);
         if (saved is not null) store.EnsureLocalIdentity(saved);
 
-        var listing = await client.RunAsync(["sync-list-remote", "--json"], 60, ct);
-        listing.EnsureSuccess();
+        var listing = await ListRemoteAsync(ct);
         var matches = FindVaults(listing.Output, saved?.VaultId ?? options.Vault);
         if (matches.Count == 0 && saved is null && options.CreateRemote)
         {
@@ -50,8 +49,7 @@ public sealed class VaultBootstrapService(
                 "--encryption", "end-to-end", "--password", password };
             if (!string.IsNullOrWhiteSpace(options.Region)) create.AddRange(["--region", options.Region]);
             (await client.RunAsync(create, 60, ct)).EnsureSuccess();
-            listing = await client.RunAsync(["sync-list-remote", "--json"], 60, ct);
-            listing.EnsureSuccess();
+            listing = await ListRemoteAsync(ct);
             matches = FindVaults(listing.Output, options.Vault);
         }
         if (matches.Count != 1)
@@ -97,6 +95,39 @@ public sealed class VaultBootstrapService(
         if (saved is null) await store.WriteLocalIdentityAsync(state, ct);
         await store.WriteBootstrapAsync(state, ct);
         return state;
+    }
+
+    private async Task<SyncProcessResult> ListRemoteAsync(CancellationToken ct)
+    {
+        var listing = await client.RunAsync(["sync-list-remote", "--json"], 60, ct);
+        if (listing.ExitCode == 0) return listing;
+        if (!listing.IsAuthenticationFailure || options.HasExplicitAuthToken)
+        {
+            listing.EnsureSuccess();
+            return listing;
+        }
+
+        var password = options.ReadAccountPassword();
+        if (string.IsNullOrWhiteSpace(options.AccountEmail) || string.IsNullOrEmpty(password))
+            throw new SyncFailure("SYNC_LOGIN_REQUIRED",
+                "Set OBSIDIAN_ACCOUNT_EMAIL and OBSIDIAN_ACCOUNT_PASSWORD in Coolify to enable automatic login, or supply OBSIDIAN_AUTH_TOKEN.", true);
+        var arguments = new List<string> { "login", "--email", options.AccountEmail, "--password", password };
+        var mfa = options.ReadAccountMfaCode();
+        if (!string.IsNullOrWhiteSpace(mfa)) arguments.AddRange(["--mfa", mfa]);
+        var login = await client.RunAsync(arguments, 60, ct);
+        if (login.ExitCode != 0)
+        {
+            var diagnostic = login.Error + login.Output;
+            if (new[] { "2FA", "MFA", "two-factor", "one-time code" }.Any(
+                    text => diagnostic.Contains(text, StringComparison.OrdinalIgnoreCase)))
+                throw new SyncFailure("SYNC_MFA_REQUIRED",
+                    "Obsidian needs a fresh MFA code. Set OBSIDIAN_ACCOUNT_MFA_CODE in Coolify and restart obsidian-sync. The saved session is reused after login.", true);
+            throw new SyncFailure("SYNC_LOGIN_FAILED",
+                "Automatic Obsidian login failed. Check the account email/password and connectivity in Coolify.", true);
+        }
+        listing = await client.RunAsync(["sync-list-remote", "--json"], 60, ct);
+        listing.EnsureSuccess();
+        return listing;
     }
 
     private static List<string> FindVaults(string output, string target)
